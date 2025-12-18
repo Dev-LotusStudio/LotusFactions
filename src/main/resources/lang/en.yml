@@ -3,6 +3,7 @@ messages:
   no_permission: "You do not have permission."
   only_players_can_use: "Only players can use this command."
   usage_faction_create: "Usage: /faction create <name> <#hex>"
+  usage_faction_remove: "Usage: /faction remove <player>"
   usage_faction_delete: "Usage: /faction delete <name>"
   only_leader_can_dissolve: "Only the leader can dissolve his faction."
   faction_dissolved: "Faction %factionName% has been dissolved."
@@ -34,3 +35,7 @@ messages:
   type_command_again_to_confirm: "Type /faction transfer %newLeaderName% again to confirm."
   error_transferring_leadership: "An error occurred while transferring leadership."
   invite_cooldown: "Please wait another %time% seconds before inviting again."
+  confirm_dissolve: "Are you sure you want to dissolve your faction? Enter the command again within 30 seconds to confirm."
+  type_command_again_to_dissolve_confirm: "Enter the command again to confirm."
+  error_deleting_faction: "An error occurred while deleting the faction."
+

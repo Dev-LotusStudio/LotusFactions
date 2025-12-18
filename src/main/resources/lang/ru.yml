@@ -3,6 +3,7 @@ messages:
   no_permission: "У вас нет прав для использование команды"
   only_players_can_use: "Только игроки могут использовать эту команду."
   usage_faction_create: "Использование: /faction create <название> <#hex>"
+  usage_faction_remove: "Использование: /faction remove <игрок>"
   usage_faction_delete: "Использование: /faction delete <name>"
   only_leader_can_dissolve: "Только лидер может распустить свою фракцию"
   faction_dissolved: "Фракция %factionName% распущена."
@@ -34,3 +35,7 @@ messages:
   type_command_again_to_confirm: "Введите /faction transfer %newLeaderName% ещё раз для подтверждения."
   error_transferring_leadership: "Произошла ошибка при передаче лидерства."
   invite_cooldown: "§cПодождите ещё %time% сек, прежде чем снова приглашать."
+  confirm_dissolve: "Вы уверены, что хотите распустить свою фракцию? Введите команду ещё раз в течение 30 секунд для подтверждения."
+  type_command_again_to_dissolve_confirm: "Введите команду ещё раз для подтверждения."
+  error_deleting_faction: "Произошла ошибка при удалении фракции."
+

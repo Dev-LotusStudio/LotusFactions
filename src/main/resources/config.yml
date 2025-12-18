@@ -6,3 +6,27 @@ discord-integration:
 faction-settings:
   max-members: 10
   invite-cooldown-seconds: 60
+
+# Backend ingest (stats export)
+ingest:
+  enabled: false
+  base-url: "http://127.0.0.1:8000"
+  endpoint-path: "/api/v1/ingest/factions/"
+  server-header: "lotuscraft"
+  api-key: "secret_key"
+  connect-timeout-ms: 5000
+  read-timeout-ms: 10000
+
+  # How often to send a snapshot to backend
+  interval-seconds: 300
+
+  # How often to record online samples (for avg/peak charts)
+  online-sample-seconds: 60
+
+  # How many days of online charts to include in payload
+  charts-days: 14
+
+  payload:
+    plugin-name: "lotuscraft-plugin"
+    server-name: "LotusCraft"
+    platform: "paper"

@@ -4,10 +4,7 @@ package org.degree.factions.commands.faction;
 import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.degree.factions.Factions;
 import org.degree.factions.commands.AbstractCommand;
-import org.degree.factions.database.FactionDatabase;
-import org.degree.factions.utils.ConfigManager;
 
 import java.sql.SQLException;
 import java.util.*;
@@ -15,7 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class FactionInviteCommand extends AbstractCommand {
 
-    private final FactionDatabase factionDatabase = new FactionDatabase();
     private final Map<UUID, Long> lastInvite = new ConcurrentHashMap<>();
 
     public FactionInviteCommand() {
@@ -94,9 +90,10 @@ public class FactionInviteCommand extends AbstractCommand {
     @Override
     public List<String> complete(CommandSender sender, String[] args) {
         if (args.length == 1) {
+            String prefix = args[0].toLowerCase();
             List<String> suggestions = new ArrayList<>();
             for (Player p : Bukkit.getOnlinePlayers()) {
-                if (!p.equals(sender)) {
+                if (!p.equals(sender) && p.getName().toLowerCase().startsWith(prefix)) {
                     suggestions.add(p.getName());
                 }
             }
@@ -104,4 +101,5 @@ public class FactionInviteCommand extends AbstractCommand {
         }
         return Collections.emptyList();
     }
+
 }

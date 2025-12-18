@@ -8,6 +8,9 @@ commands:
     description: Main command for faction management.
     usage: /faction
     permission-message: You do not have permission to use this command.
+  fchat:
+    description: Faction chat command.
+    usage: /<command> <message>
 
 permissions:
   faction.usage:
@@ -36,4 +39,8 @@ permissions:
 
   faction.transfer:
     description: Allows transferring faction leadership
+    default: op
+
+  faction.update:
+    description: Update faction stats in web(admin)
     default: op

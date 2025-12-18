@@ -1,15 +1,21 @@
 package org.degree.factions.database;
 
 import org.degree.factions.models.Faction;
+import org.degree.factions.utils.BlockStatCache;
 
 import java.sql.*;
 import java.util.*;
+import java.util.Objects;
 
 public class FactionDatabase {
 
-    private final Database database = new Database();
+    private final Database database;
     private static final long MIN_SESSION_MS = 5 * 60_000;
     private static final long MERGE_THRESHOLD_MS = 2 * 60_000;
+
+    public FactionDatabase(Database database) {
+        this.database = Objects.requireNonNull(database, "database");
+    }
 
     public Connection getConnection() {
         return database.getConnection();
@@ -258,9 +264,33 @@ public class FactionDatabase {
         long now = System.currentTimeMillis();
         Connection conn = database.getConnection();
 
+        try (PreparedStatement psOpen = conn.prepareStatement(
+                "SELECT id, faction_name FROM faction_sessions " +
+                        "WHERE player_uuid = ? AND logout_time IS NULL " +
+                        "ORDER BY login_time DESC LIMIT 1"
+        )) {
+            psOpen.setString(1, playerUuid);
+            try (ResultSet rs = psOpen.executeQuery()) {
+                if (rs.next()) {
+                    long openId = rs.getLong("id");
+                    String openFaction = rs.getString("faction_name");
+                    if (Objects.equals(openFaction, factionName)) {
+                        return;
+                    }
+                    try (PreparedStatement psClose = conn.prepareStatement(
+                            "UPDATE faction_sessions SET logout_time = ? WHERE id = ?"
+                    )) {
+                        psClose.setTimestamp(1, new Timestamp(now));
+                        psClose.setLong(2, openId);
+                        psClose.executeUpdate();
+                    }
+                }
+            }
+        } catch (SQLException ignored) {}
+
         try (
                 PreparedStatement psLast = conn.prepareStatement(
-                        "SELECT id, logout_time, login_time FROM faction_sessions " +
+                        "SELECT id, logout_time, login_time, faction_name FROM faction_sessions " +
                                 " WHERE player_uuid = ? " +
                                 " ORDER BY login_time DESC LIMIT 1"
                 )
@@ -270,7 +300,8 @@ public class FactionDatabase {
                 if (rs.next()) {
                     Timestamp tl = rs.getTimestamp("logout_time");
                     long   lid = rs.getLong("id");
-                    if (tl != null && now - tl.getTime() <= MERGE_THRESHOLD_MS) {
+                    String lastFaction = rs.getString("faction_name");
+                    if (tl != null && now - tl.getTime() <= MERGE_THRESHOLD_MS && Objects.equals(lastFaction, factionName)) {
                         try (PreparedStatement psUpd = conn.prepareStatement(
                                 "UPDATE faction_sessions SET logout_time = NULL WHERE id = ?"
                         )) {
@@ -332,23 +363,221 @@ public class FactionDatabase {
         return names;
     }
 
-    public void saveOrUpdateBlockStat(String playerUuid, String factionName, String blockType, int placed, int broken) {
-        try (PreparedStatement ps = database.prepareStatement(
-                "INSERT INTO faction_block_stats (player_uuid, faction_name, block_type, placed, broken) " +
-                        "VALUES (?, ?, ?, ?, ?) " +
-                        "ON CONFLICT(player_uuid, block_type) DO UPDATE SET " +
-                        "placed = placed + EXCLUDED.placed, " +
-                        "broken = broken + EXCLUDED.broken, " +
-                        "faction_name = EXCLUDED.faction_name"
-        )) {
-            ps.setString(1, playerUuid);
-            ps.setString(2, factionName);
-            ps.setString(3, blockType);
-            ps.setInt(4, placed);
-            ps.setInt(5, broken);
-            ps.executeUpdate();
+    public void insertOnlineSamples(long tsMs, Map<String, Integer> onlineByFaction, Collection<String> factionNames) {
+        String sql = "INSERT OR REPLACE INTO faction_online_samples (ts_ms, faction_name, online) VALUES (?, ?, ?)";
+        Connection conn = database.getConnection();
+        if (conn == null) return;
+
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            for (String factionName : factionNames) {
+                int online = onlineByFaction.getOrDefault(factionName, 0);
+                ps.setLong(1, tsMs);
+                ps.setString(2, factionName);
+                ps.setInt(3, online);
+                ps.addBatch();
+            }
+            ps.executeBatch();
         } catch (SQLException e) {
             e.printStackTrace();
+        }
+    }
+
+    public List<Map<String, Object>> getOnlineChartByDay(String factionName, int daysBack) throws SQLException {
+        long sinceMs = System.currentTimeMillis() - (daysBack * 86_400_000L);
+        String sql =
+                "SELECT " +
+                        "  date(ts_ms/1000, 'unixepoch') AS date, " +
+                        "  AVG(online)                   AS avg_online, " +
+                        "  MAX(online)                   AS peak_online " +
+                        "FROM faction_online_samples " +
+                        "WHERE faction_name = ? AND ts_ms >= ? " +
+                        "GROUP BY date " +
+                        "ORDER BY date";
+
+        List<Map<String, Object>> list = new ArrayList<>();
+        try (PreparedStatement ps = database.prepareStatement(sql)) {
+            ps.setString(1, factionName);
+            ps.setLong(2, sinceMs);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> row = new HashMap<>();
+                    row.put("date", rs.getString("date"));
+                    row.put("avgOnline", rs.getDouble("avg_online"));
+                    row.put("peakOnline", rs.getInt("peak_online"));
+                    list.add(row);
+                }
+            }
+        }
+        return list;
+    }
+
+    public List<Map<String, Object>> getOnlineChartByHour(String factionName, int daysBack) throws SQLException {
+        long sinceMs = System.currentTimeMillis() - (daysBack * 86_400_000L);
+        String sql =
+                "SELECT " +
+                        "  CAST(strftime('%H', ts_ms/1000, 'unixepoch') AS INTEGER) AS hour, " +
+                        "  AVG(online)                                                  AS avg_online " +
+                        "FROM faction_online_samples " +
+                        "WHERE faction_name = ? AND ts_ms >= ? " +
+                        "GROUP BY hour " +
+                        "ORDER BY hour";
+
+        List<Map<String, Object>> list = new ArrayList<>();
+        try (PreparedStatement ps = database.prepareStatement(sql)) {
+            ps.setString(1, factionName);
+            ps.setLong(2, sinceMs);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> row = new HashMap<>();
+                    row.put("hour", rs.getInt("hour"));
+                    row.put("avgOnline", rs.getDouble("avg_online"));
+                    list.add(row);
+                }
+            }
+        }
+        return list;
+    }
+
+    public Map<String, Long> getPlaytimeSecondsByPlayerInFaction(String factionName, long nowMs) throws SQLException {
+        Map<String, Long> secondsByPlayer = new HashMap<>();
+
+        String closedSql =
+                "SELECT player_uuid, SUM((logout_time - login_time) / 1000) AS seconds " +
+                        "FROM faction_sessions " +
+                        "WHERE faction_name = ? AND logout_time IS NOT NULL " +
+                        "GROUP BY player_uuid";
+        try (PreparedStatement ps = database.prepareStatement(closedSql)) {
+            ps.setString(1, factionName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    secondsByPlayer.put(rs.getString("player_uuid"), rs.getLong("seconds"));
+                }
+            }
+        }
+
+        String openSql =
+                "SELECT player_uuid, MIN(login_time) AS login_time " +
+                        "FROM faction_sessions " +
+                        "WHERE faction_name = ? AND logout_time IS NULL " +
+                        "GROUP BY player_uuid";
+        try (PreparedStatement ps = database.prepareStatement(openSql)) {
+            ps.setString(1, factionName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    long loginMs = rs.getTimestamp("login_time").getTime();
+                    long seconds = Math.max(0L, (nowMs - loginMs) / 1000L);
+                    secondsByPlayer.merge(rs.getString("player_uuid"), seconds, Long::sum);
+                }
+            }
+        }
+
+        return secondsByPlayer;
+    }
+
+    public Map<String, Long> getBlockTotalsForFaction(String factionName) throws SQLException {
+        String sql =
+                "SELECT " +
+                        "  COALESCE(SUM(broken), 0) AS broken_total, " +
+                        "  COALESCE(SUM(placed), 0) AS placed_total " +
+                        "FROM faction_block_stats " +
+                        "WHERE faction_name = ?";
+
+        try (PreparedStatement ps = database.prepareStatement(sql)) {
+            ps.setString(1, factionName);
+            try (ResultSet rs = ps.executeQuery()) {
+                Map<String, Long> totals = new HashMap<>();
+                if (!rs.next()) {
+                    totals.put("brokenTotal", 0L);
+                    totals.put("placedTotal", 0L);
+                    return totals;
+                }
+                totals.put("brokenTotal", rs.getLong("broken_total"));
+                totals.put("placedTotal", rs.getLong("placed_total"));
+                return totals;
+            }
+        }
+    }
+
+    public Map<String, Long> getBrokenByTypeForFaction(String factionName) throws SQLException {
+        String sql =
+                "SELECT block_type, COALESCE(SUM(broken), 0) AS broken_total " +
+                        "FROM faction_block_stats " +
+                        "WHERE faction_name = ? " +
+                        "GROUP BY block_type " +
+                        "HAVING broken_total > 0";
+        Map<String, Long> out = new HashMap<>();
+        try (PreparedStatement ps = database.prepareStatement(sql)) {
+            ps.setString(1, factionName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.put(rs.getString("block_type"), rs.getLong("broken_total"));
+                }
+            }
+        }
+        return out;
+    }
+
+    public Map<String, Long> getPlacedByTypeForFaction(String factionName) throws SQLException {
+        String sql =
+                "SELECT block_type, COALESCE(SUM(placed), 0) AS placed_total " +
+                        "FROM faction_block_stats " +
+                        "WHERE faction_name = ? " +
+                        "GROUP BY block_type " +
+                        "HAVING placed_total > 0";
+        Map<String, Long> out = new HashMap<>();
+        try (PreparedStatement ps = database.prepareStatement(sql)) {
+            ps.setString(1, factionName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.put(rs.getString("block_type"), rs.getLong("placed_total"));
+                }
+            }
+        }
+        return out;
+    }
+
+    public void saveOrUpdateBlockStatsBatch(Map<String, Map<String, BlockStatCache.BlockStat>> allStats) {
+        String sql = "INSERT INTO faction_block_stats (player_uuid, faction_name, block_type, placed, broken) " +
+                "VALUES (?, ?, ?, ?, ?) " +
+                "ON CONFLICT(player_uuid, block_type) DO UPDATE SET " +
+                "placed = placed + EXCLUDED.placed, " +
+                "broken = broken + EXCLUDED.broken, " +
+                "faction_name = EXCLUDED.faction_name";
+        Connection conn = database.getConnection();
+        if (conn == null) return;
+
+        boolean previousAutoCommit = true;
+        try {
+            previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                for (Map.Entry<String, Map<String, BlockStatCache.BlockStat>> entryByUuid : allStats.entrySet()) {
+                    String uuid = entryByUuid.getKey();
+                    for (Map.Entry<String, BlockStatCache.BlockStat> entry : entryByUuid.getValue().entrySet()) {
+                        String blockType = entry.getKey();
+                        BlockStatCache.BlockStat stat = entry.getValue();
+                        ps.setString(1, uuid);
+                        ps.setString(2, stat.factionName);
+                        ps.setString(3, blockType);
+                        ps.setInt(4, stat.placed);
+                        ps.setInt(5, stat.broken);
+                        ps.addBatch();
+                    }
+                }
+                ps.executeBatch();
+            }
+
+            conn.commit();
+        } catch (SQLException e) {
+            try {
+                conn.rollback();
+            } catch (SQLException ignored) {}
+            e.printStackTrace();
+        } finally {
+            try {
+                conn.setAutoCommit(previousAutoCommit);
+            } catch (SQLException ignored) {}
         }
     }
 
@@ -395,6 +624,49 @@ public class FactionDatabase {
         }
     }
 
+    public void saveKillStatsBatch(Map<String, org.degree.factions.utils.KillStatCache.KillStat> statsByUuid) {
+        if (statsByUuid == null || statsByUuid.isEmpty()) return;
+
+        String sql =
+                "INSERT INTO faction_kill_stats (player_uuid, faction_name, kills) " +
+                        "VALUES (?, ?, ?) " +
+                        "ON CONFLICT(player_uuid) DO UPDATE SET " +
+                        "kills = kills + EXCLUDED.kills, faction_name = EXCLUDED.faction_name";
+
+        Connection conn = database.getConnection();
+        if (conn == null) return;
+
+        boolean previousAutoCommit = true;
+        try {
+            previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                for (Map.Entry<String, org.degree.factions.utils.KillStatCache.KillStat> entry : statsByUuid.entrySet()) {
+                    String uuid = entry.getKey();
+                    org.degree.factions.utils.KillStatCache.KillStat stat = entry.getValue();
+                    if (uuid == null || stat == null || stat.factionName == null || stat.kills <= 0) continue;
+                    ps.setString(1, uuid);
+                    ps.setString(2, stat.factionName);
+                    ps.setInt(3, stat.kills);
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            }
+
+            conn.commit();
+        } catch (SQLException e) {
+            try {
+                conn.rollback();
+            } catch (SQLException ignored) {}
+            e.printStackTrace();
+        } finally {
+            try {
+                conn.setAutoCommit(previousAutoCommit);
+            } catch (SQLException ignored) {}
+        }
+    }
+
     public int getTotalKillsForPlayer(String playerUUID) throws SQLException {
         String sql = "SELECT kills FROM faction_kill_stats WHERE player_uuid = ?";
         try (PreparedStatement ps = database.prepareStatement(sql)) {
@@ -411,8 +683,28 @@ public class FactionDatabase {
     }
 
     public List<Map<String, Object>> getResourcesOfFaction(String factionName) {
-        return new ArrayList<>();
+        List<Map<String, Object>> resources = new ArrayList<>();
+        String sql = "SELECT block_type AS resource, SUM(broken) AS count " +
+                "FROM faction_block_stats " +
+                "WHERE faction_name = ? " +
+                "GROUP BY block_type " +
+                "ORDER BY count DESC";
+        try (PreparedStatement ps = database.prepareStatement(sql)) {
+            ps.setString(1, factionName);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Map<String, Object> map = new HashMap<>();
+                    map.put("resource", rs.getString("resource"));
+                    map.put("count", rs.getInt("count"));
+                    resources.add(map);
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+        return resources;
     }
+
 
     public String getMostActiveMember(String factionName) throws SQLException {
         String sql =

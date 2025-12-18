@@ -15,6 +15,7 @@ public class FactionCommandRouter extends AbstractCommand {
 
     public FactionCommandRouter() {
         subCommands.put("invite", new FactionInviteCommand());
+        subCommands.put("remove", new FactionRemoveCommand());
         subCommands.put("create", new FactionCreateCommand());
         subCommands.put("accept", new FactionAcceptCommand());
         subCommands.put("leave", new FactionLeaveCommand());
@@ -22,6 +23,7 @@ public class FactionCommandRouter extends AbstractCommand {
         subCommands.put("dissolve",  new FactionDissolveCommand());
         subCommands.put("delete",    new FactionDeleteCommand());
         subCommands.put("stats",    new FactionStatsCommand());
+        subCommands.put("update",    new FactionUpdateCommand());
     }
 
     @Override
@@ -50,7 +52,7 @@ public class FactionCommandRouter extends AbstractCommand {
         }
 
         String node = "faction." + sub;
-        if (!player.hasPermission(node) && !player.hasPermission("faction.usage")) {
+        if (!player.hasPermission(node)) {
             player.sendMessage(localization.getMessage("messages.no_permission"));
             return;
         }

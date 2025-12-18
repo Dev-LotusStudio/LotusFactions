@@ -1,24 +1,29 @@
 package org.degree.factions.database;
 
-import org.degree.factions.Factions;
+import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.sql.*;
+import java.util.Objects;
 
 public class Database {
+    private final JavaPlugin plugin;
     private Connection connection;
 
-    public Database() {
+    public Database(JavaPlugin plugin) {
+        this.plugin = Objects.requireNonNull(plugin, "plugin");
         setupConnection();
     }
 
     private void setupConnection() {
         try {
-            String databasePath = Factions.getInstance().getDataFolder() + "/factions.db";
-            File pluginDir = Factions.getInstance().getDataFolder();
-            if (!pluginDir.exists()) pluginDir.mkdirs();
+            File pluginDir = plugin.getDataFolder();
+            if (!pluginDir.exists() && !pluginDir.mkdirs()) {
+                plugin.getLogger().severe("Could not create plugin data folder: " + pluginDir.getAbsolutePath());
+            }
 
-            connection = DriverManager.getConnection("jdbc:sqlite:" + databasePath);
+            File databaseFile = new File(pluginDir, "factions.db");
+            connection = DriverManager.getConnection("jdbc:sqlite:" + databaseFile.getAbsolutePath());
 
             try (Statement stmt = connection.createStatement()) {
                 stmt.execute("CREATE TABLE IF NOT EXISTS factions (" +
@@ -72,11 +77,21 @@ public class Database {
                         "PRIMARY KEY (player_uuid, block_type)" +
                         ");");
 
+                stmt.execute("CREATE TABLE IF NOT EXISTS faction_online_samples (" +
+                        "ts_ms       INTEGER NOT NULL," +
+                        "faction_name TEXT NOT NULL," +
+                        "online      INTEGER NOT NULL," +
+                        "PRIMARY KEY (ts_ms, faction_name)" +
+                        ");");
+
+                stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_online_samples_faction_ts " +
+                        "ON faction_online_samples (faction_name, ts_ms);");
+
             }
 
-            Factions.getInstance().getLogger().info("SQLite database setup completed.");
+            plugin.getLogger().info("SQLite database setup completed.");
         } catch (SQLException e) {
-            Factions.getInstance().getLogger().severe("Could not set up SQLite database: " + e.getMessage());
+            plugin.getLogger().severe("Could not set up SQLite database: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -87,22 +102,26 @@ public class Database {
                 setupConnection();
             }
         } catch (SQLException e) {
-            Factions.getInstance().getLogger().severe("Error checking DB connection: " + e.getMessage());
+            plugin.getLogger().severe("Error checking DB connection: " + e.getMessage());
         }
         return connection;
     }
 
     public PreparedStatement prepareStatement(String sql) throws SQLException {
-        return getConnection().prepareStatement(sql);
+        Connection conn = getConnection();
+        if (conn == null) {
+            throw new SQLException("Database connection is not available");
+        }
+        return conn.prepareStatement(sql);
     }
 
     public void closeConnection() {
         if (connection != null) {
             try {
                 connection.close();
-                Factions.getInstance().getLogger().info("Database connection closed.");
+                plugin.getLogger().info("Database connection closed.");
             } catch (SQLException e) {
-                Factions.getInstance().getLogger().severe("Error while closing database connection: " + e.getMessage());
+                plugin.getLogger().severe("Error while closing database connection: " + e.getMessage());
                 e.printStackTrace();
             }
         }

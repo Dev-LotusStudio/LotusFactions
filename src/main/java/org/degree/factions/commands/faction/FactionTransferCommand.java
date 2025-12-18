@@ -4,7 +4,6 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
-import org.degree.factions.database.FactionDatabase;
 
 import java.sql.SQLException;
 import java.util.Collections;
@@ -14,8 +13,6 @@ import java.util.Map;
 import java.util.UUID;
 
 public class FactionTransferCommand extends AbstractCommand {
-
-    private final FactionDatabase factionDatabase = new FactionDatabase();
     private final Map<UUID, String> pendingTransfers = new HashMap<>();
 
     public FactionTransferCommand() {}

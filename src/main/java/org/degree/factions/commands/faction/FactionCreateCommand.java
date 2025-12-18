@@ -3,17 +3,17 @@ package org.degree.factions.commands.faction;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
-import org.degree.factions.database.FactionDatabase;
+import org.bukkit.Bukkit;
+import org.degree.factions.Factions;
 import org.degree.factions.utils.FactionCache;
 
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 public class FactionCreateCommand extends AbstractCommand {
-
-    private final FactionDatabase factionDatabase = new FactionDatabase();
     private static final String HEX_REGEX = "^#[0-9A-Fa-f]{6}$";
 
     @Override
@@ -29,18 +29,18 @@ public class FactionCreateCommand extends AbstractCommand {
             return;
         }
 
-        String factionName = args[0];
-
         String colorHex = "#FFFFFF";
-        if (args.length >= 2) {
-            String inputColor = args[1];
-            if (inputColor.matches(HEX_REGEX)) {
-                colorHex = inputColor;
-            } else {
-                localization.sendMessageToPlayer(player, "messages.invalid_color_format");
-                return;
-            }
+        String factionName;
+
+        if (args.length >= 2 && args[args.length - 1].matches(HEX_REGEX)) {
+            colorHex = args[args.length - 1];
+            factionName = String.join(" ", Arrays.copyOfRange(args, 0, args.length - 1));
+        } else {
+            factionName = String.join(" ", args);
         }
+
+        // Убираем лишние пробелы по краям
+        factionName = factionName.trim();
 
         String leaderUUID = player.getUniqueId().toString();
         String leaderName = player.getName();
@@ -51,11 +51,18 @@ public class FactionCreateCommand extends AbstractCommand {
                 return;
             }
 
-            // вызываем перегруженный метод с цветом
             factionDatabase.createFaction(factionName, leaderUUID, leaderName, colorHex);
             factionDatabase.addMemberToFaction(factionName, leaderUUID, leaderName, "LEADER");
 
             FactionCache.setFaction(leaderUUID, factionName);
+            FactionCache.setFactionColor(factionName, colorHex);
+
+            final String sessionFactionName = factionName;
+            final String sessionLeaderUuid = leaderUUID;
+            Bukkit.getScheduler().runTaskAsynchronously(Factions.getInstance(), () -> {
+                factionDatabase.logSessionEnd(sessionLeaderUuid);
+                factionDatabase.logSessionStart(sessionFactionName, sessionLeaderUuid);
+            });
 
             localization.sendMessageToPlayer(
                     player,
@@ -67,6 +74,7 @@ public class FactionCreateCommand extends AbstractCommand {
             e.printStackTrace();
         }
     }
+
 
     @Override
     public List<String> complete(CommandSender sender, String[] args) {

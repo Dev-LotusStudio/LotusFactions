@@ -4,27 +4,19 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.entity.Player;
-import org.degree.factions.database.FactionDatabase;
+import org.degree.factions.utils.FactionCache;
+import org.degree.factions.utils.KillStatCache;
 
 public class KillStatListener implements Listener {
-    private final FactionDatabase db;
-
-    public KillStatListener(FactionDatabase db) {
-        this.db = db;
-    }
-
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player killer = event.getEntity().getKiller();
         if (killer == null) return;
 
         String killerUuid = killer.getUniqueId().toString();
-        String faction = null;
-        try {
-            faction = db.getFactionNameForPlayer(killerUuid);
-        } catch (Exception ignored) {}
+        String faction = FactionCache.getFaction(killerUuid);
         if (faction == null) return;
 
-        db.incrementKill(killerUuid, faction);
+        KillStatCache.incrementKill(killerUuid, faction);
     }
 }
