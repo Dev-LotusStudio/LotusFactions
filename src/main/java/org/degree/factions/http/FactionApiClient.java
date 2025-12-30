@@ -10,6 +10,8 @@ import org.degree.factions.utils.ConfigManager;
 import org.degree.factions.utils.FactionCache;
 import org.degree.factions.utils.FactionUtils;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -242,7 +244,7 @@ public class FactionApiClient {
         conn.setDoOutput(true);
         conn.setConnectTimeout(config.getIngestConnectTimeoutMs());
         conn.setReadTimeout(config.getIngestReadTimeoutMs());
-        conn.setRequestProperty("Content-Type", "application/json");
+        conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
         conn.setRequestProperty("X-Server", config.getIngestServerHeader());
         conn.setRequestProperty("X-API-Key", config.getIngestApiKey());
 
@@ -255,7 +257,12 @@ public class FactionApiClient {
         if (code >= 200 && code < 300) {
             plugin.getLogger().info("[FactionApiClient] Ingest snapshot sent (" + code + ")");
         } else {
-            plugin.getLogger().warning("[FactionApiClient] Ingest failed: HTTP " + code);
+            String responseBody = readResponseBody(conn);
+            if (responseBody.isBlank()) {
+                plugin.getLogger().warning("[FactionApiClient] Ingest failed: HTTP " + code);
+            } else {
+                plugin.getLogger().warning("[FactionApiClient] Ingest failed: HTTP " + code + " body=" + truncate(responseBody, 2000));
+            }
         }
         conn.disconnect();
     }
@@ -266,6 +273,38 @@ public class FactionApiClient {
         if (base.endsWith("/") && path.startsWith("/")) return base.substring(0, base.length() - 1) + path;
         if (!base.endsWith("/") && !path.startsWith("/")) return base + "/" + path;
         return base + path;
+    }
+
+    private static String readResponseBody(HttpURLConnection conn) {
+        InputStream stream = null;
+        try {
+            stream = conn.getErrorStream();
+            if (stream == null) {
+                stream = conn.getInputStream();
+            }
+            if (stream == null) return "";
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[1024];
+            int read;
+            while ((read = stream.read(buffer)) >= 0) {
+                out.write(buffer, 0, read);
+            }
+            return out.toString(StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return "";
+        } finally {
+            if (stream != null) {
+                try {
+                    stream.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    private static String truncate(String value, int max) {
+        if (value == null || value.length() <= max) return value == null ? "" : value;
+        return value.substring(0, max) + "...";
     }
 
     private static String detectMcVersion() {

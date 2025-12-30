@@ -164,12 +164,67 @@ public class FactionDatabase {
         }
     }
 
-    public void transferLeadership(String factionName, String newLeaderUUID) throws SQLException {
-        String sql = "UPDATE factions SET leader_uuid = ? WHERE name = ?";
-        try (PreparedStatement pstmt = database.prepareStatement(sql)) {
-            pstmt.setString(1, newLeaderUUID);
-            pstmt.setString(2, factionName);
-            pstmt.executeUpdate();
+    public void transferLeadership(String factionName, String currentLeaderUUID, String newLeaderUUID, String newLeaderName) throws SQLException {
+        Connection conn = database.getConnection();
+        if (conn == null) {
+            throw new SQLException("Database connection is not available");
+        }
+
+        boolean previousAutoCommit = conn.getAutoCommit();
+        conn.setAutoCommit(false);
+        try {
+            int updatedLeader;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE factions SET leader_uuid = ?, leader_name = ? WHERE name = ? AND leader_uuid = ?"
+            )) {
+                ps.setString(1, newLeaderUUID);
+                ps.setString(2, newLeaderName);
+                ps.setString(3, factionName);
+                ps.setString(4, currentLeaderUUID);
+                updatedLeader = ps.executeUpdate();
+            }
+            if (updatedLeader == 0) {
+                throw new SQLException("Cannot transfer leadership: current leader does not match faction leader");
+            }
+
+            // Ensure only one leader role exists in faction_members.
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE faction_members " +
+                            "   SET role = 'MEMBER' " +
+                            " WHERE faction_name = ? " +
+                            "   AND role = 'LEADER' " +
+                            "   AND member_uuid <> ?"
+            )) {
+                ps.setString(1, factionName);
+                ps.setString(2, newLeaderUUID);
+                ps.executeUpdate();
+            }
+
+            int promoted;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE faction_members " +
+                            "   SET role = 'LEADER', member_name = ? " +
+                            " WHERE faction_name = ? AND member_uuid = ?"
+            )) {
+                ps.setString(1, newLeaderName);
+                ps.setString(2, factionName);
+                ps.setString(3, newLeaderUUID);
+                promoted = ps.executeUpdate();
+            }
+            if (promoted == 0) {
+                throw new SQLException("Cannot transfer leadership: new leader is not a faction member");
+            }
+
+            conn.commit();
+        } catch (SQLException e) {
+            try {
+                conn.rollback();
+            } catch (SQLException ignored) {}
+            throw e;
+        } finally {
+            try {
+                conn.setAutoCommit(previousAutoCommit);
+            } catch (SQLException ignored) {}
         }
     }
 

@@ -55,7 +55,12 @@ public class FactionTransferCommand extends AbstractCommand {
 
             String requestedName = pendingTransfers.get(leaderUUID);
             if (requestedName != null && requestedName.equals(newLeader.getName())) {
-                factionDatabase.transferLeadership(factionName, newLeader.getUniqueId().toString());
+                factionDatabase.transferLeadership(
+                        factionName,
+                        leaderUUID.toString(),
+                        newLeader.getUniqueId().toString(),
+                        newLeader.getName()
+                );
                 localization.sendMessageToPlayer(currentLeader,
                         "messages.leadership_transferred_successfully",
                         Map.of("newLeaderName", newLeader.getName())
