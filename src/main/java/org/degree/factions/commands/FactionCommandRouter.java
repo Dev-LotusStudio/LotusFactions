@@ -22,6 +22,8 @@ public class FactionCommandRouter extends AbstractCommand {
         subCommands.put("transfer", new FactionTransferCommand());
         subCommands.put("dissolve",  new FactionDissolveCommand());
         subCommands.put("delete",    new FactionDeleteCommand());
+        subCommands.put("rename",    new FactionRenameCommand());
+        subCommands.put("color",     new FactionColorCommand());
         subCommands.put("stats",    new FactionStatsCommand());
         subCommands.put("update",    new FactionUpdateCommand());
     }

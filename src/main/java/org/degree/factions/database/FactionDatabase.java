@@ -145,6 +145,68 @@ public class FactionDatabase {
         }
     }
 
+    public void renameFaction(String oldName, String newName) throws SQLException {
+        Connection conn = database.getConnection();
+        if (conn == null) {
+            throw new SQLException("Database connection is not available");
+        }
+
+        boolean previousAutoCommit = conn.getAutoCommit();
+        conn.setAutoCommit(false);
+        try {
+            int updated;
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE factions SET name = ? WHERE name = ?"
+            )) {
+                ps.setString(1, newName);
+                ps.setString(2, oldName);
+                updated = ps.executeUpdate();
+            }
+            if (updated == 0) {
+                throw new SQLException("Faction not found for rename: " + oldName);
+            }
+
+            updateFactionName(conn, "faction_members", oldName, newName);
+            updateFactionName(conn, "faction_invites", oldName, newName);
+            updateFactionName(conn, "faction_sessions", oldName, newName);
+            updateFactionName(conn, "faction_kill_stats", oldName, newName);
+            updateFactionName(conn, "faction_block_stats", oldName, newName);
+            updateFactionName(conn, "faction_online_samples", oldName, newName);
+
+            conn.commit();
+        } catch (SQLException e) {
+            try {
+                conn.rollback();
+            } catch (SQLException ignored) {}
+            throw e;
+        } finally {
+            try {
+                conn.setAutoCommit(previousAutoCommit);
+            } catch (SQLException ignored) {}
+        }
+    }
+
+    public void updateFactionColor(String factionName, String colorHex) throws SQLException {
+        String sql = "UPDATE factions SET color = ? WHERE name = ?";
+        try (PreparedStatement ps = database.prepareStatement(sql)) {
+            ps.setString(1, colorHex);
+            ps.setString(2, factionName);
+            int updated = ps.executeUpdate();
+            if (updated == 0) {
+                throw new SQLException("Faction not found for color update: " + factionName);
+            }
+        }
+    }
+
+    private void updateFactionName(Connection conn, String table, String oldName, String newName) throws SQLException {
+        String sql = "UPDATE " + table + " SET faction_name = ? WHERE faction_name = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, newName);
+            ps.setString(2, oldName);
+            ps.executeUpdate();
+        }
+    }
+
 
     public void removeMemberFromFaction(String playerUUID) throws SQLException {
         String sql = "DELETE FROM faction_members WHERE member_uuid = ?";

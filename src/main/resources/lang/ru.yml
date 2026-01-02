@@ -39,3 +39,11 @@ messages:
   type_command_again_to_dissolve_confirm: "Введите команду ещё раз для подтверждения."
   error_deleting_faction: "Произошла ошибка при удалении фракции."
 
+
+  usage_faction_rename: "Usage: /faction rename <oldName> <newName>"
+  faction_renamed: "Faction %oldName% has been renamed to %newName%."
+  error_renaming_faction: "An error occurred while renaming the faction."
+
+  usage_faction_color: "Usage: /faction color <name> <#hex>"
+  faction_color_updated: "Faction %factionName% color updated to %color%."
+  error_updating_faction_color: "An error occurred while updating the faction color."

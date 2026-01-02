@@ -41,6 +41,14 @@ permissions:
     description: Allows transferring faction leadership
     default: op
 
+  faction.rename:
+    description: Allows renaming factions (admin)
+    default: op
+
+  faction.color:
+    description: Allows changing faction color (admin)
+    default: op
+
   faction.update:
     description: Update faction stats in web(admin)
     default: op
