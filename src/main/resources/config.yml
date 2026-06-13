@@ -16,7 +16,6 @@ ingest:
   api-key: "secret_key"
   connect-timeout-ms: 5000
   read-timeout-ms: 10000
-
   # How often to send a snapshot to backend
   interval-seconds: 300
 

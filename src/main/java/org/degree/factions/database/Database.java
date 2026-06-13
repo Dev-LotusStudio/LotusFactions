@@ -32,8 +32,10 @@ public class Database {
                         "leader_uuid TEXT NOT NULL," +
                         "leader_name TEXT NOT NULL," +
                         "creation_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
-                        "color TEXT NOT NULL DEFAULT '#FFFFFF'" +
+                        "color TEXT NOT NULL DEFAULT '#FFFFFF'," +
+                        "discord_role_sync_enabled INTEGER NOT NULL DEFAULT 0" +
                         ");");
+                ensureColumn(stmt, "factions", "discord_role_sync_enabled", "INTEGER NOT NULL DEFAULT 0");
 
 
                 stmt.execute("CREATE TABLE IF NOT EXISTS faction_members (" +
@@ -94,6 +96,17 @@ public class Database {
             plugin.getLogger().severe("Could not set up SQLite database: " + e.getMessage());
             e.printStackTrace();
         }
+    }
+
+    private void ensureColumn(Statement stmt, String table, String column, String definition) throws SQLException {
+        try (ResultSet columns = stmt.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (columns.next()) {
+                if (column.equalsIgnoreCase(columns.getString("name"))) {
+                    return;
+                }
+            }
+        }
+        stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
     }
 
     public synchronized Connection getConnection() {

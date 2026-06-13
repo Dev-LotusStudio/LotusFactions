@@ -4,9 +4,9 @@ import org.bstats.bukkit.Metrics;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.degree.factions.commands.FactionChatCommand;
 import org.degree.factions.commands.FactionCommandRouter;
+import org.degree.factions.commands.FactionRoleSyncCommand;
 import org.degree.factions.database.Database;
 import org.degree.factions.database.FactionDatabase;
 import org.degree.factions.http.FactionApiClient;
@@ -21,6 +21,8 @@ import org.degree.factions.utils.ConfigManager;
 import org.degree.factions.utils.FactionCache;
 import org.degree.factions.utils.FactionUtils;
 import org.degree.factions.utils.LocalizationManager;
+import org.degree.factions.utils.OnlinePlayerCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Map;
@@ -55,13 +57,15 @@ public final class Factions extends JavaPlugin {
                 .setExecutor(new FactionCommandRouter());
         Objects.requireNonNull(getCommand("fchat"), "Command /fchat not found in plugin.yml")
                 .setExecutor(new FactionChatCommand());
+        Objects.requireNonNull(getCommand("factionrolesync"), "Command /factionrolesync not found in plugin.yml")
+                .setExecutor(new FactionRoleSyncCommand());
 
         getServer().getPluginManager().registerEvents(new SessionListener(this, factionDatabase), this);
         getServer().getPluginManager().registerEvents(new BlockStatListener(factionDatabase), this);
         getServer().getPluginManager().registerEvents(new KillStatListener(), this);
 
-        new BlockStatSaverTask(factionDatabase).runTaskTimer(this, 20L * 60, 20L * 60);
-        new KillStatSaverTask(this, factionDatabase).runTaskTimer(this, 20L * 60, 20L * 60);
+        SchedulerCompat.runGlobalTimer(this, new BlockStatSaverTask(factionDatabase), 20L * 60, 20L * 60);
+        SchedulerCompat.runGlobalTimer(this, new KillStatSaverTask(this, factionDatabase), 20L * 60, 20L * 60);
 
         if (getServer().getPluginManager().getPlugin("PlaceholderAPI") != null) {
             new FactionPlaceholder(this, factionDatabase).register();
@@ -71,6 +75,7 @@ public final class Factions extends JavaPlugin {
         }
 
         for (Player player : Bukkit.getOnlinePlayers()) {
+            OnlinePlayerCache.add(player);
             String uuid = player.getUniqueId().toString();
             try {
                 String faction = factionDatabase.getFactionNameForPlayer(uuid);
@@ -88,15 +93,10 @@ public final class Factions extends JavaPlugin {
 
         if (configManager.isIngestEnabled()) {
             int sampleSeconds = Math.max(10, configManager.getIngestOnlineSampleSeconds());
-            new OnlineSampleTask(this, factionDatabase).runTaskTimer(this, 20L * 5, 20L * sampleSeconds);
+            SchedulerCompat.runGlobalTimer(this, new OnlineSampleTask(this, factionDatabase), 20L * 5, 20L * sampleSeconds);
 
             int intervalSeconds = Math.max(30, configManager.getIngestIntervalSeconds());
-            new BukkitRunnable() {
-                @Override
-                public void run() {
-                    apiClient.postAllFactionsFromDatabase();
-                }
-            }.runTaskTimer(this, 20L * 10, 20L * intervalSeconds);
+            SchedulerCompat.runGlobalTimer(this, apiClient::postAllFactionsFromDatabase, 20L * 10, 20L * intervalSeconds);
 
             getLogger().info("Ingest enabled: sampling online every " + sampleSeconds + "s, sending snapshot every " + intervalSeconds + "s");
         }
@@ -109,7 +109,7 @@ public final class Factions extends JavaPlugin {
         }
     }
 
-    public class BlockStatSaverTask extends BukkitRunnable {
+    public class BlockStatSaverTask implements Runnable {
         private final FactionDatabase db;
 
         public BlockStatSaverTask(FactionDatabase db) {
@@ -120,7 +120,7 @@ public final class Factions extends JavaPlugin {
         public void run() {
             Map<String, Map<String, BlockStatCache.BlockStat>> snapshot = BlockStatCache.getAndClearStats();
             if (snapshot.isEmpty()) return;
-            Bukkit.getScheduler().runTaskAsynchronously(Factions.this, () -> db.saveOrUpdateBlockStatsBatch(snapshot));
+            SchedulerCompat.runAsync(Factions.this, () -> db.saveOrUpdateBlockStatsBatch(snapshot));
         }
     }
 

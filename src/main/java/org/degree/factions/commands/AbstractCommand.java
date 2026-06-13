@@ -16,9 +16,10 @@ public abstract class AbstractCommand implements CommandExecutor, TabCompleter {
     protected final FactionApiClient apiClient;
     protected final FactionUtils factionUtils;
     protected final FactionDatabase factionDatabase;
+    protected final Factions plugin;
 
     public AbstractCommand() {
-        Factions plugin = Factions.getInstance();
+        plugin = Factions.getInstance();
         this.localization = plugin.getLocalizationManager();
         this.config = plugin.getConfigManager();
         this.apiClient = plugin.getApiClient();

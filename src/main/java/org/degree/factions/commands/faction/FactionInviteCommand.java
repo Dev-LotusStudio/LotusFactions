@@ -5,6 +5,8 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
+import org.degree.factions.utils.OnlinePlayerCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.*;
@@ -73,10 +75,12 @@ public class FactionInviteCommand extends AbstractCommand {
             );
             lastInvite.put(inviterId, now);
 
-            localization.sendMessageToPlayer(invitee,
-                    "messages.invited_to_faction",
-                    Map.of("inviterName", inviter.getName())
-            );
+            String inviterName = inviter.getName();
+            SchedulerCompat.runEntity(plugin, invitee, () ->
+                    localization.sendMessageToPlayer(invitee,
+                            "messages.invited_to_faction",
+                            Map.of("inviterName", inviterName)
+                    ));
             localization.sendMessageToPlayer(inviter,
                     "messages.invitation_sent",
                     Map.of("inviteeName", invitee.getName())
@@ -92,9 +96,10 @@ public class FactionInviteCommand extends AbstractCommand {
         if (args.length == 1) {
             String prefix = args[0].toLowerCase();
             List<String> suggestions = new ArrayList<>();
-            for (Player p : Bukkit.getOnlinePlayers()) {
-                if (!p.equals(sender) && p.getName().toLowerCase().startsWith(prefix)) {
-                    suggestions.add(p.getName());
+            String senderName = sender.getName();
+            for (String name : OnlinePlayerCache.names()) {
+                if (!name.equals(senderName) && name.toLowerCase().startsWith(prefix)) {
+                    suggestions.add(name);
                 }
             }
             return suggestions;

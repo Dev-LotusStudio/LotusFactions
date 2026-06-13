@@ -3,9 +3,8 @@ package org.degree.factions.commands.faction;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
-import org.bukkit.Bukkit;
-import org.degree.factions.Factions;
 import org.degree.factions.utils.FactionCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Arrays;
@@ -59,7 +58,7 @@ public class FactionCreateCommand extends AbstractCommand {
 
             final String sessionFactionName = factionName;
             final String sessionLeaderUuid = leaderUUID;
-            Bukkit.getScheduler().runTaskAsynchronously(Factions.getInstance(), () -> {
+            SchedulerCompat.runAsync(plugin, () -> {
                 factionDatabase.logSessionEnd(sessionLeaderUuid);
                 factionDatabase.logSessionStart(sessionFactionName, sessionLeaderUuid);
             });
@@ -69,6 +68,7 @@ public class FactionCreateCommand extends AbstractCommand {
                     "messages.faction_created_successfully",
                     Map.of("factionName", factionName, "color", colorHex)
             );
+            apiClient.postAllFactionsFromDatabase();
         } catch (SQLException e) {
             localization.sendMessageToPlayer(player, "messages.error_creating_faction");
             e.printStackTrace();

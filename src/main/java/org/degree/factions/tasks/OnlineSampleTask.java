@@ -1,18 +1,17 @@
 package org.degree.factions.tasks;
 
-import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.degree.factions.Factions;
 import org.degree.factions.database.FactionDatabase;
 import org.degree.factions.utils.FactionCache;
+import org.degree.factions.utils.OnlinePlayerCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class OnlineSampleTask extends BukkitRunnable {
+public class OnlineSampleTask implements Runnable {
     private final Factions plugin;
     private final FactionDatabase factionDatabase;
     private volatile List<String> cachedFactionNames = List.of();
@@ -29,14 +28,14 @@ public class OnlineSampleTask extends BukkitRunnable {
         long tsMs = System.currentTimeMillis();
 
         Map<String, Integer> onlineByFaction = new HashMap<>();
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            String faction = FactionCache.getFaction(player.getUniqueId().toString());
+        for (String uuid : OnlinePlayerCache.snapshot().keySet()) {
+            String faction = FactionCache.getFaction(uuid);
             if (faction == null) continue;
             onlineByFaction.merge(faction, 1, Integer::sum);
         }
 
         Map<String, Integer> snapshot = new HashMap<>(onlineByFaction);
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        SchedulerCompat.runAsync(plugin, () -> {
             try {
                 long nowMs = System.currentTimeMillis();
                 List<String> factionNames = cachedFactionNames;

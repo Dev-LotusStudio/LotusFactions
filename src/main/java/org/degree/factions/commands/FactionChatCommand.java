@@ -4,6 +4,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Collections;
@@ -38,7 +39,7 @@ public class FactionChatCommand extends AbstractCommand {
             for (String name : memberNames) {
                 Player member = Bukkit.getPlayerExact(name);
                 if (member != null && member.isOnline()) {
-                    member.sendMessage(formatted);
+                    SchedulerCompat.runEntity(plugin, member, () -> member.sendMessage(formatted));
                 }
             }
         } catch (SQLException e) {

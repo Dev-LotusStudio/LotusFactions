@@ -82,3 +82,11 @@ shadowJar {
         )
     }
 }
+
+jar {
+    archiveClassifier.set('plain')
+}
+
+assemble {
+    dependsOn shadowJar
+}

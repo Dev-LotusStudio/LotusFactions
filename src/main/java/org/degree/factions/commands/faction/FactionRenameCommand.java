@@ -72,6 +72,7 @@ public class FactionRenameCommand extends AbstractCommand {
                     "messages.faction_renamed",
                     Map.of("oldName", oldName, "newName", newName)
             ));
+            apiClient.postAllFactionsFromDatabase();
         } catch (SQLException e) {
             sender.sendMessage(localization.getMessage("messages.error_renaming_faction"));
             e.printStackTrace();

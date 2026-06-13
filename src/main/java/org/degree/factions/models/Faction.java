@@ -9,6 +9,7 @@ public class Faction {
     private String leaderName;
     private Timestamp creationDate;
     private String colorHex;
+    private boolean discordRoleSyncEnabled;
 
     public Faction() {}
 
@@ -33,5 +34,10 @@ public class Faction {
             throw new IllegalArgumentException("Invalid hex color: " + colorHex);
         }
         this.colorHex = colorHex;
+    }
+
+    public boolean isDiscordRoleSyncEnabled() { return discordRoleSyncEnabled; }
+    public void setDiscordRoleSyncEnabled(boolean discordRoleSyncEnabled) {
+        this.discordRoleSyncEnabled = discordRoleSyncEnabled;
     }
 }

@@ -7,9 +7,10 @@ import org.degree.factions.utils.FactionCache;
 
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class FactionDissolveCommand extends AbstractCommand {
-    private final Map<UUID, Long> pendingConfirms = new HashMap<>();
+    private final Map<UUID, Long> pendingConfirms = new ConcurrentHashMap<>();
     private static final long CONFIRM_TIMEOUT_MS = 30_000;
 
     @Override
@@ -47,6 +48,7 @@ public class FactionDissolveCommand extends AbstractCommand {
                     factionDatabase.deleteFaction(faction);
                     localization.sendMessageToPlayer(player, "messages.faction_dissolved", Map.of("factionName", faction));
                     pendingConfirms.remove(uuid);
+                    apiClient.postAllFactionsFromDatabase();
                     return;
                 } else {
                     pendingConfirms.remove(uuid);

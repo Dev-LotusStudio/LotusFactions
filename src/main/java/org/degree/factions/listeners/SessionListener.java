@@ -1,6 +1,5 @@
 package org.degree.factions.listeners;
 
-import org.bukkit.Bukkit;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
@@ -9,6 +8,8 @@ import org.degree.factions.Factions;
 import org.degree.factions.database.FactionDatabase;
 import org.degree.factions.models.Faction;
 import org.degree.factions.utils.FactionCache;
+import org.degree.factions.utils.OnlinePlayerCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 
@@ -24,7 +25,8 @@ public class SessionListener implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         String uuid = e.getPlayer().getUniqueId().toString();
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        OnlinePlayerCache.add(e.getPlayer());
+        SchedulerCompat.runAsync(plugin, () -> {
             try {
                 String faction = db.getFactionNameForPlayer(uuid);
                 FactionCache.setFaction(uuid, faction);
@@ -46,7 +48,8 @@ public class SessionListener implements Listener {
     @EventHandler
     public void onQuit(PlayerQuitEvent e) {
         String uuid = e.getPlayer().getUniqueId().toString();
+        OnlinePlayerCache.remove(e.getPlayer());
         FactionCache.setFaction(uuid, null);
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> db.logSessionEnd(uuid));
+        SchedulerCompat.runAsync(plugin, () -> db.logSessionEnd(uuid));
     }
 }

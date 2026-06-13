@@ -42,6 +42,7 @@ public class FactionColorCommand extends AbstractCommand {
                     "messages.faction_color_updated",
                     java.util.Map.of("factionName", factionName, "color", colorHex)
             ));
+            apiClient.postFactionFromDatabase(factionName);
         } catch (SQLException e) {
             sender.sendMessage(localization.getMessage("messages.error_updating_faction_color"));
             e.printStackTrace();

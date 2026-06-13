@@ -4,16 +4,17 @@ import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class FactionTransferCommand extends AbstractCommand {
-    private final Map<UUID, String> pendingTransfers = new HashMap<>();
+    private final Map<UUID, String> pendingTransfers = new ConcurrentHashMap<>();
 
     public FactionTransferCommand() {}
 
@@ -65,11 +66,13 @@ public class FactionTransferCommand extends AbstractCommand {
                         "messages.leadership_transferred_successfully",
                         Map.of("newLeaderName", newLeader.getName())
                 );
-                localization.sendMessageToPlayer(newLeader,
-                        "messages.now_leader_of_faction",
-                        Map.of("factionName", factionName)
-                );
+                SchedulerCompat.runEntity(plugin, newLeader, () ->
+                        localization.sendMessageToPlayer(newLeader,
+                                "messages.now_leader_of_faction",
+                                Map.of("factionName", factionName)
+                        ));
                 pendingTransfers.remove(leaderUUID);
+                apiClient.postFactionFromDatabase(factionName);
             } else {
                 pendingTransfers.put(leaderUUID, newLeader.getName());
                 localization.sendMessageToPlayer(currentLeader,

@@ -2,6 +2,7 @@ name: Faction
 version: '${version}'
 main: org.degree.factions.Factions
 api-version: '1.21'
+folia-supported: true
 softdepend: ["PlaceholderAPI"]
 commands:
   faction:
@@ -11,6 +12,11 @@ commands:
   fchat:
     description: Faction chat command.
     usage: /<command> <message>
+  factionrolesync:
+    description: Controls Discord faction role synchronization.
+    usage: /<command> <enable|disable|status> <player>
+    permission: faction.rolesync
+    permission-message: You do not have permission to use this command.
 
 permissions:
   faction.usage:
@@ -51,4 +57,8 @@ permissions:
 
   faction.update:
     description: Update faction stats in web(admin)
+    default: op
+
+  faction.rolesync:
+    description: Controls Discord faction role synchronization
     default: op

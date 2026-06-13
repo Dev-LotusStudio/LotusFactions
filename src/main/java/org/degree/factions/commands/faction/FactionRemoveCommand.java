@@ -4,9 +4,9 @@ import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.degree.factions.Factions;
 import org.degree.factions.commands.AbstractCommand;
 import org.degree.factions.utils.FactionCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Collections;
@@ -63,11 +63,14 @@ public class FactionRemoveCommand extends AbstractCommand {
 
             factionDatabase.removeMemberFromFaction(memberUUID);
             FactionCache.setFaction(memberUUID, null);
-            Bukkit.getScheduler().runTaskAsynchronously(Factions.getInstance(), () -> factionDatabase.logSessionEnd(memberUUID));
+            SchedulerCompat.runAsync(plugin, () -> factionDatabase.logSessionEnd(memberUUID));
             leader.sendMessage("§aИгрок " + memberName + " был удален из фракции.");
             if (member.isOnline()) {
-                ((Player) member).sendMessage("§cВы были исключены из фракции " + factionName + ".");
+                Player onlineMember = (Player) member;
+                SchedulerCompat.runEntity(plugin, onlineMember,
+                        () -> onlineMember.sendMessage("§cВы были исключены из фракции " + factionName + "."));
             }
+            apiClient.postFactionFromDatabase(factionName);
         } catch (SQLException e) {
             localization.sendMessageToPlayer(leader, "messages.error_removing_member");
             e.printStackTrace();

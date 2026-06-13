@@ -113,6 +113,28 @@ public class FactionDatabase {
         return null;
     }
 
+    public String getFactionNameForPlayerName(String playerName) throws SQLException {
+        String sql = "SELECT faction_name FROM faction_members WHERE member_name = ? COLLATE NOCASE";
+        try (PreparedStatement pstmt = database.prepareStatement(sql)) {
+            pstmt.setString(1, playerName);
+            try (ResultSet rs = pstmt.executeQuery()) {
+                if (rs.next()) return rs.getString("faction_name");
+            }
+        }
+        return null;
+    }
+
+    public void setDiscordRoleSyncEnabled(String factionName, boolean enabled) throws SQLException {
+        String sql = "UPDATE factions SET discord_role_sync_enabled = ? WHERE name = ?";
+        try (PreparedStatement pstmt = database.prepareStatement(sql)) {
+            pstmt.setInt(1, enabled ? 1 : 0);
+            pstmt.setString(2, factionName);
+            if (pstmt.executeUpdate() == 0) {
+                throw new SQLException("Faction not found: " + factionName);
+            }
+        }
+    }
+
     public void addMemberToFaction(String factionName, String memberUUID, String memberName, String role) throws SQLException {
         String sql = "INSERT INTO faction_members (faction_name, member_uuid, member_name, role) VALUES (?, ?, ?, ?)";
         try (PreparedStatement pstmt = database.prepareStatement(sql)) {
@@ -451,7 +473,7 @@ public class FactionDatabase {
     }
 
     public Faction loadFaction(String name) throws SQLException {
-        String sql = "SELECT id, name, leader_uuid, leader_name, creation_date, color FROM factions WHERE name = ?";
+        String sql = "SELECT id, name, leader_uuid, leader_name, creation_date, color, discord_role_sync_enabled FROM factions WHERE name = ?";
         try (PreparedStatement ps = database.prepareStatement(sql)) {
             ps.setString(1, name);
             try (ResultSet rs = ps.executeQuery()) {
@@ -463,6 +485,7 @@ public class FactionDatabase {
                 f.setLeaderName(rs.getString("leader_name"));
                 f.setCreationDate(rs.getTimestamp("creation_date"));
                 f.setColorHex(rs.getString("color"));
+                f.setDiscordRoleSyncEnabled(rs.getInt("discord_role_sync_enabled") != 0);
                 return f;
             }
         }

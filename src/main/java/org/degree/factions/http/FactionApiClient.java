@@ -2,13 +2,14 @@ package org.degree.factions.http;
 
 import com.google.gson.Gson;
 import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
 import org.degree.factions.Factions;
 import org.degree.factions.database.FactionDatabase;
 import org.degree.factions.models.Faction;
 import org.degree.factions.utils.ConfigManager;
 import org.degree.factions.utils.FactionCache;
 import org.degree.factions.utils.FactionUtils;
+import org.degree.factions.utils.OnlinePlayerCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -46,21 +47,21 @@ public class FactionApiClient {
     public void postFactionFromDatabase(String factionName) {
         Instant capturedAt = Instant.now();
         OnlineState onlineState = captureOnlineState();
-        postIngestSnapshotAsync(capturedAt, List.of(factionName), onlineState);
+        postIngestSnapshotAsync(capturedAt, List.of(factionName), onlineState, "partial");
     }
 
     public void postAllFactionsFromDatabase() {
         Instant capturedAt = Instant.now();
         OnlineState onlineState = captureOnlineState();
-        postIngestSnapshotAsync(capturedAt, null, onlineState);
+        postIngestSnapshotAsync(capturedAt, null, onlineState, "full");
     }
 
-    public void postIngestSnapshotAsync(Instant capturedAt, Collection<String> factionNamesOrNull, OnlineState onlineState) {
+    public void postIngestSnapshotAsync(Instant capturedAt, Collection<String> factionNamesOrNull, OnlineState onlineState, String syncMode) {
         if (!config.isIngestEnabled()) return;
 
         OnlineState snapshot = onlineState.copy();
 
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+        SchedulerCompat.runAsync(plugin, () -> {
             try {
                 List<String> factionNames = factionNamesOrNull == null
                         ? factionDatabase.getAllFactionNames()
@@ -68,6 +69,7 @@ public class FactionApiClient {
 
                 Map<String, Object> json = new LinkedHashMap<>();
                 json.put("captured_at", capturedAt.toString());
+                json.put("sync_mode", syncMode);
 
                 List<Map<String, Object>> factions = new ArrayList<>();
                 for (String factionName : factionNames) {
@@ -90,12 +92,12 @@ public class FactionApiClient {
     private OnlineState captureOnlineState() {
         Map<String, Integer> countsByFaction = new HashMap<>();
         Map<String, Map<String, String>> onlineNamesByUuidByFaction = new HashMap<>();
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            String faction = FactionCache.getFaction(player.getUniqueId().toString());
+        for (Map.Entry<String, String> player : OnlinePlayerCache.snapshot().entrySet()) {
+            String uuid = player.getKey();
+            String faction = FactionCache.getFaction(uuid);
             if (faction == null) continue;
-            String uuid = player.getUniqueId().toString();
             countsByFaction.merge(faction, 1, Integer::sum);
-            onlineNamesByUuidByFaction.computeIfAbsent(faction, k -> new HashMap<>()).put(uuid, player.getName());
+            onlineNamesByUuidByFaction.computeIfAbsent(faction, k -> new HashMap<>()).put(uuid, player.getValue());
         }
         return new OnlineState(countsByFaction, onlineNamesByUuidByFaction);
     }
@@ -169,8 +171,11 @@ public class FactionApiClient {
         payload.put("blocks", blocks);
 
         Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("source_id", faction != null ? String.valueOf(faction.getId()) : "");
         entry.put("slug", slug);
         entry.put("name", factionName);
+        entry.put("hex", faction != null ? faction.getColorHex() : null);
+        entry.put("discord_role_sync_enabled", faction != null && faction.isDiscordRoleSyncEnabled());
         entry.put("payload", payload);
         return entry;
     }

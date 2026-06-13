@@ -1,12 +1,11 @@
 package org.degree.factions.commands.faction;
 
-import org.bukkit.Bukkit;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.degree.factions.Factions;
 import org.degree.factions.commands.AbstractCommand;
 import org.degree.factions.models.Faction;
 import org.degree.factions.utils.FactionCache;
+import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Collections;
@@ -56,7 +55,7 @@ public class FactionAcceptCommand extends AbstractCommand {
                 }
             } catch (SQLException ignored) {}
 
-            Bukkit.getScheduler().runTaskAsynchronously(Factions.getInstance(), () -> {
+            SchedulerCompat.runAsync(plugin, () -> {
                 factionDatabase.logSessionEnd(playerUUID);
                 factionDatabase.logSessionStart(factionName, playerUUID);
             });
@@ -65,6 +64,7 @@ public class FactionAcceptCommand extends AbstractCommand {
                     "messages.faction_joined_successfully",
                     Map.of("factionName", factionName)
             );
+            apiClient.postFactionFromDatabase(factionName);
 
         } catch (SQLException e) {
             localization.sendMessageToPlayer(player, "messages.error_accepting_invite");

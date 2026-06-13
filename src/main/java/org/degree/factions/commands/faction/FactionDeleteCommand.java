@@ -38,6 +38,7 @@ public class FactionDeleteCommand extends AbstractCommand {
                     "messages.faction_deleted_by_admin",
                     Map.of("factionName", faction)
             ));
+            apiClient.postAllFactionsFromDatabase();
         } catch (SQLException e) {
             sender.sendMessage(localization.getMessage("messages.error_deleting_faction"));
             e.printStackTrace();
