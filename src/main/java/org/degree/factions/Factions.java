@@ -20,6 +20,7 @@ import org.degree.factions.utils.BlockStatCache;
 import org.degree.factions.utils.ConfigManager;
 import org.degree.factions.utils.FactionCache;
 import org.degree.factions.utils.FactionUtils;
+import org.degree.factions.utils.KillStatCache;
 import org.degree.factions.utils.LocalizationManager;
 import org.degree.factions.utils.OnlinePlayerCache;
 import org.degree.factions.utils.SchedulerCompat;
@@ -27,6 +28,12 @@ import org.degree.factions.utils.SchedulerCompat;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
 public final class Factions extends JavaPlugin {
@@ -37,6 +44,7 @@ public final class Factions extends JavaPlugin {
     private FactionUtils factionUtils;
     private Database database;
     private FactionDatabase factionDatabase;
+    private ExecutorService databaseExecutor;
 
     @Override
     public void onEnable() {
@@ -45,6 +53,14 @@ public final class Factions extends JavaPlugin {
 
         instance = this;
         database = new Database(this);
+        databaseExecutor = Executors.newSingleThreadExecutor(worker -> {
+            Thread thread = new Thread(() -> {
+                database.setBusyTimeoutForCurrentThread(Database.BACKGROUND_BUSY_TIMEOUT_MS);
+                worker.run();
+            }, getName() + "-Database");
+            thread.setDaemon(true);
+            return thread;
+        });
         factionDatabase = new FactionDatabase(database);
         factionUtils = new FactionUtils();
         configManager = new ConfigManager(this);
@@ -68,7 +84,7 @@ public final class Factions extends JavaPlugin {
         SchedulerCompat.runGlobalTimer(this, new KillStatSaverTask(this, factionDatabase), 20L * 60, 20L * 60);
 
         if (getServer().getPluginManager().getPlugin("PlaceholderAPI") != null) {
-            new FactionPlaceholder(this, factionDatabase).register();
+            new FactionPlaceholder(this).register();
             getLogger().info("Registered FactionPlaceholder for PAPI");
         } else {
             getLogger().warning("PlaceholderAPI not found; FactionPlaceholder not registered");
@@ -104,6 +120,10 @@ public final class Factions extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (apiClient != null) {
+            apiClient.close();
+        }
+        flushAndStopDatabaseExecutor();
         if (database != null) {
             database.closeConnection();
         }
@@ -118,10 +138,93 @@ public final class Factions extends JavaPlugin {
 
         @Override
         public void run() {
-            Map<String, Map<String, BlockStatCache.BlockStat>> snapshot = BlockStatCache.getAndClearStats();
-            if (snapshot.isEmpty()) return;
-            SchedulerCompat.runAsync(Factions.this, () -> db.saveOrUpdateBlockStatsBatch(snapshot));
+            runDatabaseTask(() -> {
+                Map<String, Map<String, BlockStatCache.BlockStat>> snapshot = BlockStatCache.getAndClearStats();
+                if (!snapshot.isEmpty() && !db.saveOrUpdateBlockStatsBatch(snapshot)) {
+                    BlockStatCache.merge(snapshot);
+                }
+            });
         }
+    }
+
+    public boolean runDatabaseTask(Runnable task) {
+        ExecutorService executor = databaseExecutor;
+        if (executor == null || executor.isShutdown()) {
+            return false;
+        }
+        try {
+            executor.execute(() -> {
+                try {
+                    task.run();
+                } catch (RuntimeException e) {
+                    getLogger().log(Level.WARNING, "Asynchronous database task failed", e);
+                }
+            });
+            return true;
+        } catch (RejectedExecutionException ignored) {
+            return false;
+        }
+    }
+
+    private void flushAndStopDatabaseExecutor() {
+        ExecutorService executor = databaseExecutor;
+        if (executor == null) {
+            return;
+        }
+
+        Future<?> finalFlush;
+        try {
+            finalFlush = executor.submit(this::flushPendingStatistics);
+        } catch (RejectedExecutionException ignored) {
+            forceStopDatabaseExecutor(executor);
+            return;
+        }
+        executor.shutdown();
+        try {
+            finalFlush.get(20, TimeUnit.SECONDS);
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                getLogger().warning("Database worker did not stop after the final flush; stopping it now");
+                forceStopDatabaseExecutor(executor);
+            }
+        } catch (TimeoutException e) {
+            getLogger().warning("Database worker did not flush within 20 seconds; stopping it now");
+            forceStopDatabaseExecutor(executor);
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            getLogger().log(Level.WARNING, "Final database flush failed", e);
+            forceStopDatabaseExecutor(executor);
+        }
+    }
+
+    private void forceStopDatabaseExecutor(ExecutorService executor) {
+        executor.shutdownNow();
+        try {
+            executor.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void flushPendingStatistics() {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Map<String, Map<String, BlockStatCache.BlockStat>> blockStats = BlockStatCache.getAndClearStats();
+            Map<String, KillStatCache.KillStat> killStats = KillStatCache.getAndClear();
+
+            boolean blocksSaved = blockStats.isEmpty() || factionDatabase.saveOrUpdateBlockStatsBatch(blockStats);
+            boolean killsSaved = killStats.isEmpty() || factionDatabase.saveKillStatsBatch(killStats);
+            if (!blocksSaved) {
+                BlockStatCache.merge(blockStats);
+            }
+            if (!killsSaved) {
+                KillStatCache.merge(killStats);
+            }
+            if (blocksSaved && killsSaved) {
+                return;
+            }
+        }
+        getLogger().warning("Some pending faction statistics could not be flushed before shutdown");
     }
 
     public ConfigManager getConfigManager() {

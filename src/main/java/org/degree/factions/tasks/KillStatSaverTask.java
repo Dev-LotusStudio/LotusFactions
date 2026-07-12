@@ -3,7 +3,6 @@ package org.degree.factions.tasks;
 import org.degree.factions.Factions;
 import org.degree.factions.database.FactionDatabase;
 import org.degree.factions.utils.KillStatCache;
-import org.degree.factions.utils.SchedulerCompat;
 
 import java.util.Map;
 
@@ -18,9 +17,11 @@ public class KillStatSaverTask implements Runnable {
 
     @Override
     public void run() {
-        Map<String, KillStatCache.KillStat> snapshot = KillStatCache.getAndClear();
-        if (snapshot.isEmpty()) return;
-
-        SchedulerCompat.runAsync(plugin, () -> factionDatabase.saveKillStatsBatch(snapshot));
+        plugin.runDatabaseTask(() -> {
+            Map<String, KillStatCache.KillStat> snapshot = KillStatCache.getAndClear();
+            if (!snapshot.isEmpty() && !factionDatabase.saveKillStatsBatch(snapshot)) {
+                KillStatCache.merge(snapshot);
+            }
+        });
     }
 }

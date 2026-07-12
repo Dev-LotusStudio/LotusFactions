@@ -4,7 +4,6 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
 import org.degree.factions.utils.FactionCache;
-import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Arrays;
@@ -50,15 +49,14 @@ public class FactionCreateCommand extends AbstractCommand {
                 return;
             }
 
-            factionDatabase.createFaction(factionName, leaderUUID, leaderName, colorHex);
-            factionDatabase.addMemberToFaction(factionName, leaderUUID, leaderName, "LEADER");
+            factionDatabase.createFactionWithLeader(factionName, leaderUUID, leaderName, colorHex);
 
             FactionCache.setFaction(leaderUUID, factionName);
             FactionCache.setFactionColor(factionName, colorHex);
 
             final String sessionFactionName = factionName;
             final String sessionLeaderUuid = leaderUUID;
-            SchedulerCompat.runAsync(plugin, () -> {
+            plugin.runDatabaseTask(() -> {
                 factionDatabase.logSessionEnd(sessionLeaderUuid);
                 factionDatabase.logSessionStart(sessionFactionName, sessionLeaderUuid);
             });

@@ -38,14 +38,15 @@ public class FactionDissolveCommand extends AbstractCommand {
             if (pendingConfirms.containsKey(uuid)) {
                 long expire = pendingConfirms.get(uuid);
                 if (now <= expire) {
-                    for (Map<String, String> member : factionDatabase.getMemberNameUuidPairsOfFaction(faction)) {
+                    List<Map<String, String>> members = factionDatabase.getMemberNameUuidPairsOfFaction(faction);
+                    factionDatabase.deleteFaction(faction);
+                    for (Map<String, String> member : members) {
                         String memberUuid = member.get("uuid");
                         if (memberUuid != null) {
                             FactionCache.setFaction(memberUuid, null);
                         }
                     }
                     FactionCache.removeFactionColor(faction);
-                    factionDatabase.deleteFaction(faction);
                     localization.sendMessageToPlayer(player, "messages.faction_dissolved", Map.of("factionName", faction));
                     pendingConfirms.remove(uuid);
                     apiClient.postAllFactionsFromDatabase();

@@ -4,7 +4,6 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
 import org.degree.factions.utils.FactionCache;
-import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Collections;
@@ -34,7 +33,7 @@ public class FactionLeaveCommand extends AbstractCommand {
             factionDatabase.removeMemberFromFaction(playerUUID);
 
             FactionCache.setFaction(playerUUID, null);
-            SchedulerCompat.runAsync(plugin, () -> factionDatabase.logSessionEnd(playerUUID));
+            plugin.runDatabaseTask(() -> factionDatabase.logSessionEnd(playerUUID));
 
             localization.sendMessageToPlayer(player, "messages.faction_left_successfully");
             if (factionName != null) {

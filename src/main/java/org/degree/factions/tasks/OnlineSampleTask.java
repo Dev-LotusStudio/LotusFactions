@@ -4,20 +4,14 @@ import org.degree.factions.Factions;
 import org.degree.factions.database.FactionDatabase;
 import org.degree.factions.utils.FactionCache;
 import org.degree.factions.utils.OnlinePlayerCache;
-import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 public class OnlineSampleTask implements Runnable {
     private final Factions plugin;
     private final FactionDatabase factionDatabase;
-    private volatile List<String> cachedFactionNames = List.of();
-    private volatile long lastRefreshMs = 0L;
-    private static final long REFRESH_INTERVAL_MS = 5 * 60_000L;
-
     public OnlineSampleTask(Factions plugin, FactionDatabase factionDatabase) {
         this.plugin = plugin;
         this.factionDatabase = factionDatabase;
@@ -35,15 +29,9 @@ public class OnlineSampleTask implements Runnable {
         }
 
         Map<String, Integer> snapshot = new HashMap<>(onlineByFaction);
-        SchedulerCompat.runAsync(plugin, () -> {
+        plugin.runDatabaseTask(() -> {
             try {
-                long nowMs = System.currentTimeMillis();
-                List<String> factionNames = cachedFactionNames;
-                if (factionNames.isEmpty() || nowMs - lastRefreshMs >= REFRESH_INTERVAL_MS) {
-                    factionNames = factionDatabase.getAllFactionNames();
-                    cachedFactionNames = factionNames;
-                    lastRefreshMs = nowMs;
-                }
+                var factionNames = factionDatabase.getAllFactionNames();
                 factionDatabase.insertOnlineSamples(tsMs, snapshot, factionNames);
             } catch (SQLException e) {
                 plugin.getLogger().warning("Failed to store online samples: " + e.getMessage());

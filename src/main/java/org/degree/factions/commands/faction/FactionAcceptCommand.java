@@ -5,7 +5,6 @@ import org.bukkit.entity.Player;
 import org.degree.factions.commands.AbstractCommand;
 import org.degree.factions.models.Faction;
 import org.degree.factions.utils.FactionCache;
-import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 import java.util.Collections;
@@ -44,8 +43,7 @@ public class FactionAcceptCommand extends AbstractCommand {
             }
 
             // 3. Добавляем в новую фракцию
-            factionDatabase.addMemberToFaction(factionName, playerUUID, player.getName(), "MEMBER");
-            factionDatabase.removeInvite(factionName, playerUUID);
+            factionDatabase.addMemberAndRemoveInvite(factionName, playerUUID, player.getName(), "MEMBER");
 
             FactionCache.setFaction(playerUUID, factionName);
             try {
@@ -55,7 +53,7 @@ public class FactionAcceptCommand extends AbstractCommand {
                 }
             } catch (SQLException ignored) {}
 
-            SchedulerCompat.runAsync(plugin, () -> {
+            plugin.runDatabaseTask(() -> {
                 factionDatabase.logSessionEnd(playerUUID);
                 factionDatabase.logSessionStart(factionName, playerUUID);
             });

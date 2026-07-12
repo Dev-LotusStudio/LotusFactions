@@ -9,7 +9,6 @@ import org.degree.factions.database.FactionDatabase;
 import org.degree.factions.models.Faction;
 import org.degree.factions.utils.FactionCache;
 import org.degree.factions.utils.OnlinePlayerCache;
-import org.degree.factions.utils.SchedulerCompat;
 
 import java.sql.SQLException;
 
@@ -26,7 +25,10 @@ public class SessionListener implements Listener {
     public void onJoin(PlayerJoinEvent e) {
         String uuid = e.getPlayer().getUniqueId().toString();
         OnlinePlayerCache.add(e.getPlayer());
-        SchedulerCompat.runAsync(plugin, () -> {
+        plugin.runDatabaseTask(() -> {
+            if (!OnlinePlayerCache.contains(uuid)) {
+                return;
+            }
             try {
                 String faction = db.getFactionNameForPlayer(uuid);
                 FactionCache.setFaction(uuid, faction);
@@ -49,7 +51,10 @@ public class SessionListener implements Listener {
     public void onQuit(PlayerQuitEvent e) {
         String uuid = e.getPlayer().getUniqueId().toString();
         OnlinePlayerCache.remove(e.getPlayer());
-        FactionCache.setFaction(uuid, null);
-        SchedulerCompat.runAsync(plugin, () -> db.logSessionEnd(uuid));
+        FactionCache.clearPlayer(uuid);
+        plugin.runDatabaseTask(() -> {
+            FactionCache.clearPlayer(uuid);
+            db.logSessionEnd(uuid);
+        });
     }
 }

@@ -26,14 +26,15 @@ public class FactionDeleteCommand extends AbstractCommand {
                 sender.sendMessage(localization.getMessage("messages.faction_not_found"));
                 return;
             }
-            for (Map<String, String> member : factionDatabase.getMemberNameUuidPairsOfFaction(faction)) {
+            List<Map<String, String>> members = factionDatabase.getMemberNameUuidPairsOfFaction(faction);
+            factionDatabase.deleteFaction(faction);
+            for (Map<String, String> member : members) {
                 String uuid = member.get("uuid");
                 if (uuid != null) {
                     FactionCache.setFaction(uuid, null);
                 }
             }
             FactionCache.removeFactionColor(faction);
-            factionDatabase.deleteFaction(faction);
             sender.sendMessage(localization.getMessage(
                     "messages.faction_deleted_by_admin",
                     Map.of("factionName", faction)

@@ -63,7 +63,7 @@ public class FactionRemoveCommand extends AbstractCommand {
 
             factionDatabase.removeMemberFromFaction(memberUUID);
             FactionCache.setFaction(memberUUID, null);
-            SchedulerCompat.runAsync(plugin, () -> factionDatabase.logSessionEnd(memberUUID));
+            plugin.runDatabaseTask(() -> factionDatabase.logSessionEnd(memberUUID));
             leader.sendMessage("§aИгрок " + memberName + " был удален из фракции.");
             if (member.isOnline()) {
                 Player onlineMember = (Player) member;

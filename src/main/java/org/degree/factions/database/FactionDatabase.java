@@ -2,14 +2,21 @@ package org.degree.factions.database;
 
 import org.degree.factions.models.Faction;
 import org.degree.factions.utils.BlockStatCache;
+import org.degree.factions.utils.FactionCache;
+import org.degree.factions.utils.KillStatCache;
 
 import java.sql.*;
 import java.util.*;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public class FactionDatabase {
 
     private final Database database;
+    private final ReentrantReadWriteLock factionStatsLock = new ReentrantReadWriteLock(true);
+    private final Map<String, String> factionAliases = new ConcurrentHashMap<>();
     private static final long MIN_SESSION_MS = 5 * 60_000;
     private static final long MERGE_THRESHOLD_MS = 2 * 60_000;
 
@@ -21,17 +28,30 @@ public class FactionDatabase {
         return database.getConnection();
     }
 
+    public Connection openReadOnlyConnection() throws SQLException {
+        return database.openReadOnlyConnection();
+    }
+
     public void addInvite(String factionName, String inviterUUID, String inviteeUUID) throws SQLException {
-        removeAllInvitesForPlayer(inviteeUUID);
-        String sql = "INSERT INTO faction_invites (faction_name, inviter_uuid, invitee_uuid, invite_date, expiry_date) VALUES (?, ?, ?, ?, ?)";
-        try (PreparedStatement pstmt = database.prepareStatement(sql)) {
-            pstmt.setString(1, factionName);
-            pstmt.setString(2, inviterUUID);
-            pstmt.setString(3, inviteeUUID);
-            pstmt.setTimestamp(4, new Timestamp(System.currentTimeMillis()));
-            pstmt.setTimestamp(5, new Timestamp(System.currentTimeMillis() + 86400000));
-            pstmt.executeUpdate();
-        }
+        runTransaction(conn -> {
+            try (PreparedStatement delete = conn.prepareStatement(
+                    "DELETE FROM faction_invites WHERE invitee_uuid = ?")) {
+                delete.setString(1, inviteeUUID);
+                delete.executeUpdate();
+            }
+            try (PreparedStatement insert = conn.prepareStatement(
+                    "INSERT INTO faction_invites " +
+                            "(faction_name, inviter_uuid, invitee_uuid, invite_date, expiry_date) " +
+                            "VALUES (?, ?, ?, ?, ?)")) {
+                long now = System.currentTimeMillis();
+                insert.setString(1, factionName);
+                insert.setString(2, inviterUUID);
+                insert.setString(3, inviteeUUID);
+                insert.setTimestamp(4, new Timestamp(now));
+                insert.setTimestamp(5, new Timestamp(now + 86_400_000L));
+                insert.executeUpdate();
+            }
+        });
     }
 
     public void removeAllInvitesForPlayer(String inviteeUUID) throws SQLException {
@@ -62,23 +82,55 @@ public class FactionDatabase {
     }
 
     public void deleteFaction(String factionName) throws SQLException {
-        try (PreparedStatement ps = database.prepareStatement(
-                "DELETE FROM faction_members WHERE faction_name = ?")) {
-            ps.setString(1, factionName);
-            ps.executeUpdate();
+        Lock lock = factionStatsLock.writeLock();
+        lock.lock();
+        try {
+            deleteFactionUnlocked(factionName);
+            removeFactionAliases(factionName);
+            FactionCache.clearFaction(factionName);
+            BlockStatCache.removeFaction(factionName);
+            KillStatCache.removeFaction(factionName);
+        } finally {
+            lock.unlock();
         }
-        try (PreparedStatement ps = database.prepareStatement(
-                "DELETE FROM faction_invites WHERE faction_name = ?")) {
-            ps.setString(1, factionName);
-            ps.executeUpdate();
+    }
+
+    private void deleteFactionUnlocked(String factionName) throws SQLException {
+        Connection conn = database.getConnection();
+        if (conn == null) {
+            throw new SQLException("Database connection is not available");
         }
-        try (PreparedStatement ps = database.prepareStatement(
-                "DELETE FROM faction_sessions WHERE faction_name = ?")) {
-            ps.setString(1, factionName);
-            ps.executeUpdate();
+
+        boolean previousAutoCommit = conn.getAutoCommit();
+        conn.setAutoCommit(false);
+        try {
+            deleteFactionRows(conn, "faction_members", factionName);
+            deleteFactionRows(conn, "faction_invites", factionName);
+            deleteFactionRows(conn, "faction_sessions", factionName);
+            deleteFactionRows(conn, "faction_kill_stats", factionName);
+            deleteFactionRows(conn, "faction_block_stats", factionName);
+            deleteFactionRows(conn, "faction_online_samples", factionName);
+
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM factions WHERE name = ?")) {
+                ps.setString(1, factionName);
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            try {
+                conn.rollback();
+            } catch (SQLException rollbackError) {
+                e.addSuppressed(rollbackError);
+            }
+            throw e;
+        } finally {
+            conn.setAutoCommit(previousAutoCommit);
         }
-        try (PreparedStatement ps = database.prepareStatement(
-                "DELETE FROM factions WHERE name = ?")) {
+    }
+
+    private void deleteFactionRows(Connection conn, String table, String factionName) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "DELETE FROM " + table + " WHERE faction_name = ?")) {
             ps.setString(1, factionName);
             ps.executeUpdate();
         }
@@ -167,7 +219,66 @@ public class FactionDatabase {
         }
     }
 
+    public void createFactionWithLeader(String name, String leaderUUID, String leaderName, String colorHex) throws SQLException {
+        runTransaction(conn -> {
+            try (PreparedStatement faction = conn.prepareStatement(
+                    "INSERT INTO factions (name, leader_uuid, leader_name, color) VALUES (?, ?, ?, ?)")) {
+                faction.setString(1, name);
+                faction.setString(2, leaderUUID);
+                faction.setString(3, leaderName);
+                faction.setString(4, colorHex);
+                faction.executeUpdate();
+            }
+            try (PreparedStatement member = conn.prepareStatement(
+                    "INSERT INTO faction_members (faction_name, member_uuid, member_name, role) " +
+                            "VALUES (?, ?, ?, 'LEADER')")) {
+                member.setString(1, name);
+                member.setString(2, leaderUUID);
+                member.setString(3, leaderName);
+                member.executeUpdate();
+            }
+        });
+    }
+
+    public void addMemberAndRemoveInvite(
+            String factionName,
+            String memberUUID,
+            String memberName,
+            String role
+    ) throws SQLException {
+        runTransaction(conn -> {
+            try (PreparedStatement member = conn.prepareStatement(
+                    "INSERT INTO faction_members (faction_name, member_uuid, member_name, role) VALUES (?, ?, ?, ?)")) {
+                member.setString(1, factionName);
+                member.setString(2, memberUUID);
+                member.setString(3, memberName);
+                member.setString(4, role);
+                member.executeUpdate();
+            }
+            try (PreparedStatement invite = conn.prepareStatement(
+                    "DELETE FROM faction_invites WHERE faction_name = ? AND invitee_uuid = ?")) {
+                invite.setString(1, factionName);
+                invite.setString(2, memberUUID);
+                invite.executeUpdate();
+            }
+        });
+    }
+
     public void renameFaction(String oldName, String newName) throws SQLException {
+        Lock lock = factionStatsLock.writeLock();
+        lock.lock();
+        try {
+            renameFactionUnlocked(oldName, newName);
+            updateFactionAliasesAfterRename(oldName, newName);
+            FactionCache.renameFaction(oldName, newName);
+            BlockStatCache.renameFaction(oldName, newName);
+            KillStatCache.renameFaction(oldName, newName);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void renameFactionUnlocked(String oldName, String newName) throws SQLException {
         Connection conn = database.getConnection();
         if (conn == null) {
             throw new SQLException("Database connection is not available");
@@ -176,6 +287,13 @@ public class FactionDatabase {
         boolean previousAutoCommit = conn.getAutoCommit();
         conn.setAutoCommit(false);
         try {
+            // Existing databases were created without ON UPDATE CASCADE. Deferring
+            // the FK check lets this transaction update the parent and all legacy
+            // child rows atomically before SQLite validates the constraint.
+            try (Statement statement = conn.createStatement()) {
+                statement.execute("PRAGMA defer_foreign_keys=ON");
+            }
+
             int updated;
             try (PreparedStatement ps = conn.prepareStatement(
                     "UPDATE factions SET name = ? WHERE name = ?"
@@ -402,65 +520,82 @@ public class FactionDatabase {
     public void logSessionStart(String factionName, String playerUuid) {
         long now = System.currentTimeMillis();
         Connection conn = database.getConnection();
+        if (conn == null) return;
 
-        try (PreparedStatement psOpen = conn.prepareStatement(
-                "SELECT id, faction_name FROM faction_sessions " +
-                        "WHERE player_uuid = ? AND logout_time IS NULL " +
-                        "ORDER BY login_time DESC LIMIT 1"
-        )) {
-            psOpen.setString(1, playerUuid);
-            try (ResultSet rs = psOpen.executeQuery()) {
-                if (rs.next()) {
-                    long openId = rs.getLong("id");
-                    String openFaction = rs.getString("faction_name");
-                    if (Objects.equals(openFaction, factionName)) {
-                        return;
-                    }
-                    try (PreparedStatement psClose = conn.prepareStatement(
-                            "UPDATE faction_sessions SET logout_time = ? WHERE id = ?"
-                    )) {
-                        psClose.setTimestamp(1, new Timestamp(now));
-                        psClose.setLong(2, openId);
-                        psClose.executeUpdate();
+        boolean previousAutoCommit = true;
+        try {
+            previousAutoCommit = conn.getAutoCommit();
+            conn.setAutoCommit(false);
+
+            try (PreparedStatement psOpen = conn.prepareStatement(
+                    "SELECT id, faction_name FROM faction_sessions " +
+                            "WHERE player_uuid = ? AND logout_time IS NULL " +
+                            "ORDER BY login_time DESC LIMIT 1"
+            )) {
+                psOpen.setString(1, playerUuid);
+                try (ResultSet rs = psOpen.executeQuery()) {
+                    if (rs.next()) {
+                        long openId = rs.getLong("id");
+                        String openFaction = rs.getString("faction_name");
+                        if (Objects.equals(openFaction, factionName)) {
+                            conn.commit();
+                            return;
+                        }
+                        try (PreparedStatement psClose = conn.prepareStatement(
+                                "UPDATE faction_sessions SET logout_time = ? WHERE id = ?"
+                        )) {
+                            psClose.setTimestamp(1, new Timestamp(now));
+                            psClose.setLong(2, openId);
+                            psClose.executeUpdate();
+                        }
                     }
                 }
             }
-        } catch (SQLException ignored) {}
 
-        try (
-                PreparedStatement psLast = conn.prepareStatement(
-                        "SELECT id, logout_time, login_time, faction_name FROM faction_sessions " +
-                                " WHERE player_uuid = ? " +
-                                " ORDER BY login_time DESC LIMIT 1"
-                )
-        ) {
-            psLast.setString(1, playerUuid);
-            try (ResultSet rs = psLast.executeQuery()) {
-                if (rs.next()) {
-                    Timestamp tl = rs.getTimestamp("logout_time");
-                    long   lid = rs.getLong("id");
-                    String lastFaction = rs.getString("faction_name");
-                    if (tl != null && now - tl.getTime() <= MERGE_THRESHOLD_MS && Objects.equals(lastFaction, factionName)) {
-                        try (PreparedStatement psUpd = conn.prepareStatement(
-                                "UPDATE faction_sessions SET logout_time = NULL WHERE id = ?"
-                        )) {
-                            psUpd.setLong(1, lid);
-                            psUpd.executeUpdate();
+            try (PreparedStatement psLast = conn.prepareStatement(
+                    "SELECT id, logout_time, login_time, faction_name FROM faction_sessions " +
+                            "WHERE player_uuid = ? ORDER BY login_time DESC LIMIT 1"
+            )) {
+                psLast.setString(1, playerUuid);
+                try (ResultSet rs = psLast.executeQuery()) {
+                    if (rs.next()) {
+                        Timestamp logoutTime = rs.getTimestamp("logout_time");
+                        long lastId = rs.getLong("id");
+                        String lastFaction = rs.getString("faction_name");
+                        if (logoutTime != null
+                                && now - logoutTime.getTime() <= MERGE_THRESHOLD_MS
+                                && Objects.equals(lastFaction, factionName)) {
+                            try (PreparedStatement psUpdate = conn.prepareStatement(
+                                    "UPDATE faction_sessions SET logout_time = NULL WHERE id = ?"
+                            )) {
+                                psUpdate.setLong(1, lastId);
+                                psUpdate.executeUpdate();
+                            }
+                            conn.commit();
                             return;
                         }
                     }
                 }
             }
-        } catch (SQLException ignored) {}
 
-        try (PreparedStatement ps = database.prepareStatement(
-                "INSERT INTO faction_sessions (faction_name, player_uuid, login_time) VALUES (?,?,?)"
-        )) {
-            ps.setString(1, factionName);
-            ps.setString(2, playerUuid);
-            ps.setTimestamp(3, new Timestamp(now));
-            ps.executeUpdate();
-        } catch (SQLException ignored) {}
+            try (PreparedStatement ps = conn.prepareStatement(
+                    "INSERT INTO faction_sessions (faction_name, player_uuid, login_time) VALUES (?,?,?)"
+            )) {
+                ps.setString(1, factionName);
+                ps.setString(2, playerUuid);
+                ps.setTimestamp(3, new Timestamp(now));
+                ps.executeUpdate();
+            }
+            conn.commit();
+        } catch (SQLException e) {
+            try {
+                conn.rollback();
+            } catch (SQLException ignored) {}
+        } finally {
+            try {
+                conn.setAutoCommit(previousAutoCommit);
+            } catch (SQLException ignored) {}
+        }
     }
 
     public void logSessionEnd(String playerUuid) {
@@ -676,17 +811,30 @@ public class FactionDatabase {
         return out;
     }
 
-    public void saveOrUpdateBlockStatsBatch(Map<String, Map<String, BlockStatCache.BlockStat>> allStats) {
+    public boolean saveOrUpdateBlockStatsBatch(Map<String, Map<String, BlockStatCache.BlockStat>> allStats) {
+        Lock lock = factionStatsLock.readLock();
+        lock.lock();
+        try {
+            return saveOrUpdateBlockStatsBatchUnlocked(allStats);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private boolean saveOrUpdateBlockStatsBatchUnlocked(Map<String, Map<String, BlockStatCache.BlockStat>> allStats) {
+        if (allStats == null || allStats.isEmpty()) return true;
         String sql = "INSERT INTO faction_block_stats (player_uuid, faction_name, block_type, placed, broken) " +
-                "VALUES (?, ?, ?, ?, ?) " +
+                "SELECT ?, ?, ?, ?, ? " +
+                "WHERE EXISTS (SELECT 1 FROM factions WHERE name = ?) " +
                 "ON CONFLICT(player_uuid, block_type) DO UPDATE SET " +
                 "placed = placed + EXCLUDED.placed, " +
                 "broken = broken + EXCLUDED.broken, " +
                 "faction_name = EXCLUDED.faction_name";
         Connection conn = database.getConnection();
-        if (conn == null) return;
+        if (conn == null) return false;
 
         boolean previousAutoCommit = true;
+        boolean success = false;
         try {
             previousAutoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
@@ -698,10 +846,12 @@ public class FactionDatabase {
                         String blockType = entry.getKey();
                         BlockStatCache.BlockStat stat = entry.getValue();
                         ps.setString(1, uuid);
-                        ps.setString(2, stat.factionName);
+                        String factionName = resolveFactionAlias(stat.factionName);
+                        ps.setString(2, factionName);
                         ps.setString(3, blockType);
                         ps.setInt(4, stat.placed);
                         ps.setInt(5, stat.broken);
+                        ps.setString(6, factionName);
                         ps.addBatch();
                     }
                 }
@@ -709,6 +859,7 @@ public class FactionDatabase {
             }
 
             conn.commit();
+            success = true;
         } catch (SQLException e) {
             try {
                 conn.rollback();
@@ -717,8 +868,11 @@ public class FactionDatabase {
         } finally {
             try {
                 conn.setAutoCommit(previousAutoCommit);
-            } catch (SQLException ignored) {}
+            } catch (SQLException ignored) {
+                database.invalidateCurrentConnection();
+            }
         }
+        return success;
     }
 
     public List<Map<String, String>> getMemberNameUuidPairsOfFaction(String factionName) throws SQLException {
@@ -764,19 +918,31 @@ public class FactionDatabase {
         }
     }
 
-    public void saveKillStatsBatch(Map<String, org.degree.factions.utils.KillStatCache.KillStat> statsByUuid) {
-        if (statsByUuid == null || statsByUuid.isEmpty()) return;
+    public boolean saveKillStatsBatch(Map<String, org.degree.factions.utils.KillStatCache.KillStat> statsByUuid) {
+        Lock lock = factionStatsLock.readLock();
+        lock.lock();
+        try {
+            return saveKillStatsBatchUnlocked(statsByUuid);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private boolean saveKillStatsBatchUnlocked(Map<String, org.degree.factions.utils.KillStatCache.KillStat> statsByUuid) {
+        if (statsByUuid == null || statsByUuid.isEmpty()) return true;
 
         String sql =
                 "INSERT INTO faction_kill_stats (player_uuid, faction_name, kills) " +
-                        "VALUES (?, ?, ?) " +
+                        "SELECT ?, ?, ? " +
+                        "WHERE EXISTS (SELECT 1 FROM factions WHERE name = ?) " +
                         "ON CONFLICT(player_uuid) DO UPDATE SET " +
                         "kills = kills + EXCLUDED.kills, faction_name = EXCLUDED.faction_name";
 
         Connection conn = database.getConnection();
-        if (conn == null) return;
+        if (conn == null) return false;
 
         boolean previousAutoCommit = true;
+        boolean success = false;
         try {
             previousAutoCommit = conn.getAutoCommit();
             conn.setAutoCommit(false);
@@ -787,14 +953,17 @@ public class FactionDatabase {
                     org.degree.factions.utils.KillStatCache.KillStat stat = entry.getValue();
                     if (uuid == null || stat == null || stat.factionName == null || stat.kills <= 0) continue;
                     ps.setString(1, uuid);
-                    ps.setString(2, stat.factionName);
+                    String factionName = resolveFactionAlias(stat.factionName);
+                    ps.setString(2, factionName);
                     ps.setInt(3, stat.kills);
+                    ps.setString(4, factionName);
                     ps.addBatch();
                 }
                 ps.executeBatch();
             }
 
             conn.commit();
+            success = true;
         } catch (SQLException e) {
             try {
                 conn.rollback();
@@ -803,8 +972,11 @@ public class FactionDatabase {
         } finally {
             try {
                 conn.setAutoCommit(previousAutoCommit);
-            } catch (SQLException ignored) {}
+            } catch (SQLException ignored) {
+                database.invalidateCurrentConnection();
+            }
         }
+        return success;
     }
 
     public int getTotalKillsForPlayer(String playerUUID) throws SQLException {
@@ -883,6 +1055,95 @@ public class FactionDatabase {
             }
         }
         return blocks;
+    }
+
+    private String resolveFactionAlias(String factionName) {
+        if (factionName == null) return null;
+        String resolved = factionName;
+        for (int i = 0; i < 64; i++) {
+            String next = factionAliases.get(resolved);
+            if (next == null || next.equals(resolved)) {
+                return resolved;
+            }
+            resolved = next;
+        }
+        return resolved;
+    }
+
+    private void removeFactionAliases(String factionName) {
+        Set<String> aliasesToRemove = new HashSet<>();
+        for (String alias : factionAliases.keySet()) {
+            if (factionName.equals(resolveFactionAlias(alias))) {
+                aliasesToRemove.add(alias);
+            }
+        }
+        aliasesToRemove.forEach(factionAliases::remove);
+        factionAliases.remove(factionName);
+    }
+
+    private void updateFactionAliasesAfterRename(String oldName, String newName) {
+        Set<String> predecessors = new HashSet<>();
+        for (String alias : factionAliases.keySet()) {
+            if (oldName.equals(resolveFactionAlias(alias))) {
+                predecessors.add(alias);
+            }
+        }
+        predecessors.add(oldName);
+
+        // newName is the real database name now, so it must never remain an alias.
+        factionAliases.remove(newName);
+        for (String alias : predecessors) {
+            if (alias.equals(newName)) {
+                factionAliases.remove(alias);
+            } else {
+                factionAliases.put(alias, newName);
+            }
+        }
+    }
+
+    private void runTransaction(TransactionWork work) throws SQLException {
+        Connection conn = database.getConnection();
+        if (conn == null) {
+            throw new SQLException("Database connection is not available");
+        }
+
+        boolean previousAutoCommit = conn.getAutoCommit();
+        boolean committed = false;
+        SQLException failure = null;
+        try {
+            conn.setAutoCommit(false);
+            work.execute(conn);
+            conn.commit();
+            committed = true;
+        } catch (SQLException e) {
+            failure = e;
+            try {
+                conn.rollback();
+            } catch (SQLException rollbackError) {
+                failure.addSuppressed(rollbackError);
+            }
+        } finally {
+            try {
+                conn.setAutoCommit(previousAutoCommit);
+            } catch (SQLException restoreError) {
+                database.invalidateCurrentConnection();
+                if (!committed) {
+                    if (failure == null) {
+                        failure = restoreError;
+                    } else {
+                        failure.addSuppressed(restoreError);
+                    }
+                }
+            }
+        }
+        if (failure != null) {
+            throw failure;
+        }
+    }
+
+    @FunctionalInterface
+    private interface TransactionWork {
+        void execute(Connection connection) throws SQLException;
     }
 
 

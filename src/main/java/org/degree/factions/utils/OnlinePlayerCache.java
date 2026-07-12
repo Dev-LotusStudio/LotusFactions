@@ -25,6 +25,10 @@ public final class OnlinePlayerCache {
         return new HashMap<>(namesByUuid);
     }
 
+    public static boolean contains(String uuid) {
+        return uuid != null && namesByUuid.containsKey(uuid);
+    }
+
     public static Set<String> names() {
         return Set.copyOf(namesByUuid.values());
     }
