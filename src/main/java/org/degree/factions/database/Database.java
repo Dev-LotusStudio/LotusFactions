@@ -112,6 +112,15 @@ public class Database {
                     "PRIMARY KEY (ts_ms, faction_name)" +
                     ");");
 
+            stmt.execute("CREATE TABLE IF NOT EXISTS faction_online_hourly (" +
+                    "hour_ms      INTEGER NOT NULL," +
+                    "faction_name TEXT NOT NULL," +
+                    "online_sum   INTEGER NOT NULL," +
+                    "sample_count INTEGER NOT NULL," +
+                    "peak_online  INTEGER NOT NULL," +
+                    "PRIMARY KEY (hour_ms, faction_name)" +
+                    ");");
+
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_members_faction " +
                     "ON faction_members (faction_name);");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_members_uuid " +
@@ -120,16 +129,29 @@ public class Database {
                     "ON faction_members (faction_name, member_uuid);");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_members_name_nocase " +
                     "ON faction_members (member_name COLLATE NOCASE);");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_sessions_faction_player_logout " +
-                    "ON faction_sessions (faction_name, player_uuid, logout_time);");
+            stmt.execute("DROP INDEX IF EXISTS idx_faction_sessions_faction_player_logout;");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_sessions_faction_player_logout_login " +
+                    "ON faction_sessions (faction_name, player_uuid, logout_time, login_time);");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_sessions_player_logout_login " +
                     "ON faction_sessions (player_uuid, logout_time, login_time);");
-            stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_block_stats_faction_type " +
-                    "ON faction_block_stats (faction_name, block_type);");
+            stmt.execute("DROP INDEX IF EXISTS idx_faction_block_stats_faction_type;");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_block_stats_faction_type_totals " +
+                    "ON faction_block_stats (faction_name, block_type, broken, placed);");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_online_samples_faction_ts " +
                     "ON faction_online_samples (faction_name, ts_ms);");
             stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_online_samples_ts " +
                     "ON faction_online_samples (ts_ms);");
+            stmt.execute("DROP INDEX IF EXISTS idx_faction_online_hourly_faction_hour;");
+            stmt.execute("DROP INDEX IF EXISTS idx_faction_online_hourly_hour;");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_online_hourly_faction_hour_values " +
+                    "ON faction_online_hourly " +
+                    "(faction_name, hour_ms, online_sum, sample_count, peak_online);");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_faction_online_hourly_hour_values " +
+                    "ON faction_online_hourly " +
+                    "(hour_ms, faction_name, online_sum, sample_count, peak_online);");
+
+            migrateOnlineSamplesToHourly(schemaConnection);
+            stmt.execute("PRAGMA optimize=0x10002");
 
             plugin.getLogger().info("SQLite database setup completed.");
         } catch (SQLException e) {
@@ -146,6 +168,45 @@ public class Database {
             }
         }
         stmt.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+    }
+
+    /**
+     * One-time compaction of legacy minute samples. Keeping sums and a sample
+     * count preserves the exact weighted averages while reducing a 14-day full
+     * export from hundreds of thousands of rows to a few thousand hourly rows.
+     */
+    private void migrateOnlineSamplesToHourly(Connection connection) throws SQLException {
+        boolean previousAutoCommit = connection.getAutoCommit();
+        connection.setAutoCommit(false);
+        try {
+            String migrateSql = "INSERT INTO faction_online_hourly "
+                    + "(hour_ms, faction_name, online_sum, sample_count, peak_online) "
+                    + "SELECT (ts_ms / 3600000) * 3600000, faction_name, "
+                    + "SUM(online), COUNT(*), MAX(online) "
+                    + "FROM faction_online_samples WHERE 1 = 1 "
+                    + "GROUP BY (ts_ms / 3600000) * 3600000, faction_name "
+                    + "ON CONFLICT(hour_ms, faction_name) DO UPDATE SET "
+                    + "online_sum = faction_online_hourly.online_sum + excluded.online_sum, "
+                    + "sample_count = faction_online_hourly.sample_count + excluded.sample_count, "
+                    + "peak_online = MAX(faction_online_hourly.peak_online, excluded.peak_online)";
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate(migrateSql);
+                int compactedRows = statement.executeUpdate("DELETE FROM faction_online_samples");
+                connection.commit();
+                if (compactedRows > 0) {
+                    plugin.getLogger().info("Compacted " + compactedRows + " online samples into hourly aggregates.");
+                }
+            }
+        } catch (SQLException e) {
+            try {
+                connection.rollback();
+            } catch (SQLException rollbackError) {
+                e.addSuppressed(rollbackError);
+            }
+            throw e;
+        } finally {
+            connection.setAutoCommit(previousAutoCommit);
+        }
     }
 
     public Connection getConnection() {
@@ -202,6 +263,8 @@ public class Database {
             readOnlyConnections.removeIf(connection -> !isOpen(connection));
             Connection connection = openConfiguredConnection(BACKGROUND_BUSY_TIMEOUT_MS);
             try (Statement stmt = connection.createStatement()) {
+                stmt.execute("PRAGMA temp_store=MEMORY");
+                stmt.execute("PRAGMA cache_size=-8192");
                 stmt.execute("PRAGMA query_only=ON");
             } catch (SQLException e) {
                 closeQuietly(connection);
@@ -246,6 +309,24 @@ public class Database {
         }
     }
 
+    /**
+     * Performs WAL maintenance only from the background database worker. Auto
+     * checkpoints are disabled per connection so a gameplay command can never
+     * become the thread that performs checkpoint I/O after its COMMIT.
+     */
+    public void checkpointWalPassive() {
+        Connection connection = getConnection();
+        if (connection == null) {
+            return;
+        }
+        try (Statement statement = connection.createStatement();
+             ResultSet ignored = statement.executeQuery("PRAGMA wal_checkpoint(PASSIVE)")) {
+            // Reading/closing the result is enough; PASSIVE never waits for readers.
+        } catch (SQLException e) {
+            plugin.getLogger().warning("Could not checkpoint SQLite WAL: " + e.getMessage());
+        }
+    }
+
     public void invalidateCurrentConnection() {
         lifecycleLock.readLock().lock();
         try {
@@ -277,6 +358,7 @@ public class Database {
             stmt.execute("PRAGMA busy_timeout=" + Math.max(0, busyTimeoutMs));
             stmt.execute("PRAGMA synchronous=NORMAL");
             stmt.execute("PRAGMA foreign_keys=ON");
+            stmt.execute("PRAGMA wal_autocheckpoint=0");
         }
     }
 

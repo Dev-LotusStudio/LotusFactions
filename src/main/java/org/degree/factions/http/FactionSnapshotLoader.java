@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Loads an ingest snapshot using one short-lived read-only SQLite connection.
@@ -32,26 +33,48 @@ final class FactionSnapshotLoader {
         this.factionDatabase = factionDatabase;
     }
 
-    List<Snapshot> load(Instant capturedAt, Collection<String> requestedNames, int chartsDays) throws SQLException {
+    LoadResult load(Instant capturedAt, Collection<String> requestedNames, int chartsDays) throws SQLException {
         List<String> names = normalizeNames(requestedNames);
         if (names != null && names.isEmpty()) {
-            return List.of();
+            return new LoadResult(List.of(), new LoadTimings());
         }
 
         Map<String, Snapshot> snapshots = new LinkedHashMap<>();
+        LoadTimings timings = new LoadTimings();
+        long connectionStarted = System.nanoTime();
         try (Connection connection = factionDatabase.openReadOnlyConnection()) {
+            timings.openNanos = System.nanoTime() - connectionStarted;
             connection.setAutoCommit(false);
             try {
+                long stageStarted = System.nanoTime();
                 loadFactions(connection, names, snapshots);
+                timings.factionsNanos = System.nanoTime() - stageStarted;
                 if (!snapshots.isEmpty()) {
+                    stageStarted = System.nanoTime();
                     loadMembers(connection, names, snapshots);
+                    timings.membersNanos = System.nanoTime() - stageStarted;
+
+                    stageStarted = System.nanoTime();
                     loadPlaytime(connection, names, snapshots, capturedAt.toEpochMilli());
+                    timings.playtimeNanos = System.nanoTime() - stageStarted;
+
                     long sinceMs = capturedAt.toEpochMilli() - Math.max(1, chartsDays) * 86_400_000L;
-                    loadDailyCharts(connection, names, snapshots, sinceMs);
-                    loadHourlyCharts(connection, names, snapshots, sinceMs);
+                    long sinceHourMs = Math.floorDiv(sinceMs, 3_600_000L) * 3_600_000L;
+                    stageStarted = System.nanoTime();
+                    loadDailyCharts(connection, names, snapshots, sinceHourMs);
+                    timings.dailyNanos = System.nanoTime() - stageStarted;
+
+                    stageStarted = System.nanoTime();
+                    loadHourlyCharts(connection, names, snapshots, sinceHourMs);
+                    timings.hourlyNanos = System.nanoTime() - stageStarted;
+
+                    stageStarted = System.nanoTime();
                     loadBlocks(connection, names, snapshots);
+                    timings.blocksNanos = System.nanoTime() - stageStarted;
                 }
+                long commitStarted = System.nanoTime();
                 connection.commit();
+                timings.commitNanos = System.nanoTime() - commitStarted;
             } catch (SQLException | RuntimeException e) {
                 try {
                     connection.rollback();
@@ -61,7 +84,7 @@ final class FactionSnapshotLoader {
                 throw e;
             }
         }
-        return new ArrayList<>(snapshots.values());
+        return new LoadResult(new ArrayList<>(snapshots.values()), timings);
     }
 
     private void loadFactions(Connection connection, List<String> names, Map<String, Snapshot> snapshots) throws SQLException {
@@ -149,15 +172,16 @@ final class FactionSnapshotLoader {
             Connection connection,
             List<String> names,
             Map<String, Snapshot> snapshots,
-            long sinceMs
+            long sinceHourMs
     ) throws SQLException {
-        String sql = "SELECT faction_name, date(ts_ms/1000, 'unixepoch') AS date, "
-                + "AVG(online) AS avg_online, MAX(online) AS peak_online "
-                + "FROM faction_online_samples WHERE ts_ms >= ?"
+        String sql = "SELECT faction_name, date(hour_ms/1000, 'unixepoch') AS date, "
+                + "CAST(SUM(online_sum) AS REAL) / SUM(sample_count) AS avg_online, "
+                + "MAX(peak_online) AS peak_online "
+                + hourlyTableWithIndex(names) + " WHERE hour_ms >= ?"
                 + andIn("faction_name", names)
                 + " GROUP BY faction_name, date ORDER BY faction_name, date";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setLong(1, sinceMs);
+            statement.setLong(1, sinceHourMs);
             bindNames(statement, 2, names);
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
@@ -179,16 +203,16 @@ final class FactionSnapshotLoader {
             Connection connection,
             List<String> names,
             Map<String, Snapshot> snapshots,
-            long sinceMs
+            long sinceHourMs
     ) throws SQLException {
         String sql = "SELECT faction_name, "
-                + "CAST(strftime('%H', ts_ms/1000, 'unixepoch') AS INTEGER) AS hour, "
-                + "AVG(online) AS avg_online "
-                + "FROM faction_online_samples WHERE ts_ms >= ?"
+                + "CAST(strftime('%H', hour_ms/1000, 'unixepoch') AS INTEGER) AS hour, "
+                + "CAST(SUM(online_sum) AS REAL) / SUM(sample_count) AS avg_online "
+                + hourlyTableWithIndex(names) + " WHERE hour_ms >= ?"
                 + andIn("faction_name", names)
                 + " GROUP BY faction_name, hour ORDER BY faction_name, hour";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setLong(1, sinceMs);
+            statement.setLong(1, sinceHourMs);
             bindNames(statement, 2, names);
             try (ResultSet result = statement.executeQuery()) {
                 while (result.next()) {
@@ -258,6 +282,13 @@ final class FactionSnapshotLoader {
         return names == null ? "" : " AND " + column + " IN (" + placeholders(names.size()) + ")";
     }
 
+    private static String hourlyTableWithIndex(List<String> names) {
+        String indexName = names == null
+                ? "idx_faction_online_hourly_hour_values"
+                : "idx_faction_online_hourly_faction_hour_values";
+        return "FROM faction_online_hourly INDEXED BY " + indexName;
+    }
+
     private static String placeholders(int count) {
         return String.join(",", Collections.nCopies(count, "?"));
     }
@@ -271,6 +302,42 @@ final class FactionSnapshotLoader {
             statement.setString(index++, name);
         }
         return index;
+    }
+
+    static final class LoadResult {
+        final List<Snapshot> snapshots;
+        final LoadTimings timings;
+
+        private LoadResult(List<Snapshot> snapshots, LoadTimings timings) {
+            this.snapshots = snapshots;
+            this.timings = timings;
+        }
+    }
+
+    static final class LoadTimings {
+        private long openNanos;
+        private long factionsNanos;
+        private long membersNanos;
+        private long playtimeNanos;
+        private long dailyNanos;
+        private long hourlyNanos;
+        private long blocksNanos;
+        private long commitNanos;
+
+        String formatMillis() {
+            return "[open=" + millis(openNanos)
+                    + ",factions=" + millis(factionsNanos)
+                    + ",members=" + millis(membersNanos)
+                    + ",playtime=" + millis(playtimeNanos)
+                    + ",daily=" + millis(dailyNanos)
+                    + ",hourly=" + millis(hourlyNanos)
+                    + ",blocks=" + millis(blocksNanos)
+                    + ",commit=" + millis(commitNanos) + "]ms";
+        }
+
+        private static long millis(long nanos) {
+            return TimeUnit.NANOSECONDS.toMillis(Math.max(0L, nanos));
+        }
     }
 
     static final class Snapshot {

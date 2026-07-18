@@ -64,6 +64,7 @@ public class FactionApiClient implements AutoCloseable {
     private final AtomicLong retryDelayHintMs = new AtomicLong();
 
     private final String ingestUrl;
+    private final boolean ingestEnabled;
     private final String serverHeader;
     private final String apiKey;
     private final int connectTimeoutMs;
@@ -76,6 +77,7 @@ public class FactionApiClient implements AutoCloseable {
         this.config = config;
         this.factionUtils = factionUtils;
         this.snapshotLoader = new FactionSnapshotLoader(factionDatabase);
+        this.ingestEnabled = config.isIngestEnabled();
         this.ingestUrl = joinUrl(config.getIngestBaseUrl(), config.getIngestEndpointPath());
         this.serverHeader = config.getIngestServerHeader();
         this.apiKey = config.getIngestApiKey();
@@ -88,6 +90,7 @@ public class FactionApiClient implements AutoCloseable {
         this.ingestExecutor = Executors.newSingleThreadScheduledExecutor(task -> {
             Thread thread = new Thread(task, threadName);
             thread.setDaemon(true);
+            thread.setPriority(Thread.MIN_PRIORITY);
             return thread;
         });
     }
@@ -97,7 +100,7 @@ public class FactionApiClient implements AutoCloseable {
             return;
         }
         Instant capturedAt = Instant.now();
-        postIngestSnapshotAsync(capturedAt, List.of(factionName), captureOnlineState(), "partial");
+        postIngestSnapshotAsync(capturedAt, List.of(factionName), "partial");
     }
 
     public void postAllFactionsFromDatabase() {
@@ -105,7 +108,26 @@ public class FactionApiClient implements AutoCloseable {
             return;
         }
         Instant capturedAt = Instant.now();
-        postIngestSnapshotAsync(capturedAt, null, captureOnlineState(), "full");
+        postIngestSnapshotAsync(capturedAt, null, "full");
+    }
+
+    /**
+     * Runs the periodic enqueue on the ingest executor itself. In particular,
+     * Folia's global tick never has to copy the online-player state.
+     */
+    public void startPeriodicFullSnapshots(long initialDelaySeconds, long intervalSeconds) {
+        long safeInitialDelay = Math.max(0L, initialDelaySeconds);
+        long safeInterval = Math.max(1L, intervalSeconds);
+        try {
+            ingestExecutor.scheduleWithFixedDelay(
+                    this::postAllFactionsFromDatabase,
+                    safeInitialDelay,
+                    safeInterval,
+                    TimeUnit.SECONDS
+            );
+        } catch (RejectedExecutionException ignored) {
+            // Plugin is already stopping.
+        }
     }
 
     /**
@@ -115,7 +137,6 @@ public class FactionApiClient implements AutoCloseable {
     public void postIngestSnapshotAsync(
             Instant capturedAt,
             Collection<String> factionNamesOrNull,
-            OnlineState onlineState,
             String syncMode
     ) {
         if (!canAcceptRequest()) {
@@ -125,7 +146,6 @@ public class FactionApiClient implements AutoCloseable {
         IngestRequest request = new IngestRequest(
                 capturedAt,
                 factionNamesOrNull,
-                onlineState,
                 System.nanoTime()
         );
         pendingRequest.accumulateAndGet(request, (queued, incoming) ->
@@ -134,7 +154,7 @@ public class FactionApiClient implements AutoCloseable {
     }
 
     private boolean canAcceptRequest() {
-        return acceptingRequests.get() && config.isIngestEnabled();
+        return acceptingRequests.get() && ingestEnabled;
     }
 
     private void scheduleWorker(long delayMs) {
@@ -195,17 +215,20 @@ public class FactionApiClient implements AutoCloseable {
         long startedNanos = System.nanoTime();
         retryDelayHintMs.set(0L);
         try {
-            List<FactionSnapshotLoader.Snapshot> snapshots = snapshotLoader.load(
+            OnlineState onlineState = captureOnlineState();
+            long captureFinishedNanos = System.nanoTime();
+            FactionSnapshotLoader.LoadResult loadResult = snapshotLoader.load(
                     request.capturedAt,
                     request.factionNames,
                     chartsDays
             );
+            List<FactionSnapshotLoader.Snapshot> snapshots = loadResult.snapshots;
             long databaseFinishedNanos = System.nanoTime();
             if (isCancelled()) {
                 return SendOutcome.CANCELLED;
             }
 
-            Map<String, Object> body = buildRequestBody(request, snapshots);
+            Map<String, Object> body = buildRequestBody(request, snapshots, onlineState);
             long payloadFinishedNanos = System.nanoTime();
             if (isCancelled()) {
                 return SendOutcome.CANCELLED;
@@ -215,7 +238,8 @@ public class FactionApiClient implements AutoCloseable {
             long finishedNanos = System.nanoTime();
 
             long queuedMs = elapsedMs(request.queuedAtNanos, startedNanos);
-            long databaseMs = elapsedMs(startedNanos, databaseFinishedNanos);
+            long captureMs = elapsedMs(startedNanos, captureFinishedNanos);
+            long databaseMs = elapsedMs(captureFinishedNanos, databaseFinishedNanos);
             long payloadMs = elapsedMs(databaseFinishedNanos, payloadFinishedNanos);
             long postMs = elapsedMs(payloadFinishedNanos, finishedNanos);
             long jsonMs = TimeUnit.NANOSECONDS.toMillis(result.jsonEncodingNanos);
@@ -227,7 +251,9 @@ public class FactionApiClient implements AutoCloseable {
                                 + ", factions=" + snapshots.size()
                                 + ", bytes=" + result.requestBytes
                                 + ", queue=" + queuedMs + "ms"
+                                + ", capture=" + captureMs + "ms"
                                 + ", db=" + databaseMs + "ms"
+                                + ", dbParts=" + loadResult.timings.formatMillis()
                                 + ", build=" + payloadMs + "ms"
                                 + ", json=" + jsonMs + "ms"
                                 + ", http=" + httpMs + "ms)"
@@ -271,7 +297,8 @@ public class FactionApiClient implements AutoCloseable {
 
     private Map<String, Object> buildRequestBody(
             IngestRequest request,
-            List<FactionSnapshotLoader.Snapshot> snapshots
+            List<FactionSnapshotLoader.Snapshot> snapshots,
+            OnlineState onlineState
     ) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("captured_at", request.capturedAt.toString());
@@ -279,7 +306,7 @@ public class FactionApiClient implements AutoCloseable {
 
         List<Map<String, Object>> factions = new ArrayList<>(snapshots.size());
         for (FactionSnapshotLoader.Snapshot snapshot : snapshots) {
-            factions.add(buildFactionEntry(snapshot, request.onlineState));
+            factions.add(buildFactionEntry(snapshot, onlineState));
         }
         body.put("factions", factions);
         return body;
@@ -576,23 +603,20 @@ public class FactionApiClient implements AutoCloseable {
     private static final class IngestRequest {
         private final Instant capturedAt;
         private final List<String> factionNames;
-        private final OnlineState onlineState;
         private final long queuedAtNanos;
         private final int retryAttempt;
 
         private IngestRequest(
                 Instant capturedAt,
                 Collection<String> factionNames,
-                OnlineState onlineState,
                 long queuedAtNanos
         ) {
-            this(capturedAt, factionNames, onlineState, queuedAtNanos, 0);
+            this(capturedAt, factionNames, queuedAtNanos, 0);
         }
 
         private IngestRequest(
                 Instant capturedAt,
                 Collection<String> factionNames,
-                OnlineState onlineState,
                 long queuedAtNanos,
                 int retryAttempt
         ) {
@@ -601,7 +625,6 @@ public class FactionApiClient implements AutoCloseable {
             this.factionNames = normalizedNames != null && normalizedNames.size() > MAX_PARTIAL_FACTIONS
                     ? null
                     : normalizedNames;
-            this.onlineState = onlineState;
             this.queuedAtNanos = queuedAtNanos;
             this.retryAttempt = retryAttempt;
         }
@@ -620,7 +643,6 @@ public class FactionApiClient implements AutoCloseable {
             return new IngestRequest(
                     newer.capturedAt,
                     mergedNames,
-                    newer.onlineState,
                     Math.min(queuedAtNanos, newer.queuedAtNanos),
                     newer.retryAttempt == 0 ? 0 : Math.max(retryAttempt, newer.retryAttempt)
             );
@@ -630,7 +652,6 @@ public class FactionApiClient implements AutoCloseable {
             return new IngestRequest(
                     capturedAt,
                     factionNames,
-                    onlineState,
                     queuedAtNanos,
                     retryAttempt + 1
             );

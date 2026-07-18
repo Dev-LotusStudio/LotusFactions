@@ -19,6 +19,7 @@ public class FactionDatabase {
     private final Map<String, String> factionAliases = new ConcurrentHashMap<>();
     private static final long MIN_SESSION_MS = 5 * 60_000;
     private static final long MERGE_THRESHOLD_MS = 2 * 60_000;
+    private static final int JDBC_BATCH_SIZE = 500;
 
     public FactionDatabase(Database database) {
         this.database = Objects.requireNonNull(database, "database");
@@ -110,6 +111,7 @@ public class FactionDatabase {
             deleteFactionRows(conn, "faction_kill_stats", factionName);
             deleteFactionRows(conn, "faction_block_stats", factionName);
             deleteFactionRows(conn, "faction_online_samples", factionName);
+            deleteFactionRows(conn, "faction_online_hourly", factionName);
 
             try (PreparedStatement ps = conn.prepareStatement("DELETE FROM factions WHERE name = ?")) {
                 ps.setString(1, factionName);
@@ -312,6 +314,7 @@ public class FactionDatabase {
             updateFactionName(conn, "faction_kill_stats", oldName, newName);
             updateFactionName(conn, "faction_block_stats", oldName, newName);
             updateFactionName(conn, "faction_online_samples", oldName, newName);
+            updateFactionName(conn, "faction_online_hourly", oldName, newName);
 
             conn.commit();
         } catch (SQLException e) {
@@ -638,41 +641,58 @@ public class FactionDatabase {
         return names;
     }
 
-    public void insertOnlineSamples(long tsMs, Map<String, Integer> onlineByFaction, Collection<String> factionNames) {
-        String sql = "INSERT OR REPLACE INTO faction_online_samples (ts_ms, faction_name, online) VALUES (?, ?, ?)";
-        Connection conn = database.getConnection();
-        if (conn == null) return;
-
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            for (String factionName : factionNames) {
-                int online = onlineByFaction.getOrDefault(factionName, 0);
-                ps.setLong(1, tsMs);
-                ps.setString(2, factionName);
-                ps.setInt(3, online);
-                ps.addBatch();
-            }
-            ps.executeBatch();
+    public boolean insertOnlineSamples(long tsMs, Map<String, Integer> onlineByFaction, Collection<String> factionNames) {
+        String sql = "INSERT INTO faction_online_hourly "
+                + "(hour_ms, faction_name, online_sum, sample_count, peak_online) "
+                + "SELECT ?, ?, ?, 1, ? WHERE EXISTS (SELECT 1 FROM factions WHERE name = ?) "
+                + "ON CONFLICT(hour_ms, faction_name) DO UPDATE SET "
+                + "online_sum = faction_online_hourly.online_sum + excluded.online_sum, "
+                + "sample_count = faction_online_hourly.sample_count + excluded.sample_count, "
+                + "peak_online = MAX(faction_online_hourly.peak_online, excluded.peak_online)";
+        Lock lock = factionStatsLock.readLock();
+        lock.lock();
+        try {
+            runTransaction(conn -> {
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    long hourMs = Math.floorDiv(tsMs, 3_600_000L) * 3_600_000L;
+                    for (String originalFactionName : factionNames) {
+                        String factionName = resolveFactionAlias(originalFactionName);
+                        int online = onlineByFaction.getOrDefault(originalFactionName, 0);
+                        ps.setLong(1, hourMs);
+                        ps.setString(2, factionName);
+                        ps.setInt(3, online);
+                        ps.setInt(4, online);
+                        ps.setString(5, factionName);
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            });
+            return true;
         } catch (SQLException e) {
-            e.printStackTrace();
+            return false;
+        } finally {
+            lock.unlock();
         }
     }
 
     public List<Map<String, Object>> getOnlineChartByDay(String factionName, int daysBack) throws SQLException {
         long sinceMs = System.currentTimeMillis() - (daysBack * 86_400_000L);
+        long sinceHourMs = Math.floorDiv(sinceMs, 3_600_000L) * 3_600_000L;
         String sql =
                 "SELECT " +
-                        "  date(ts_ms/1000, 'unixepoch') AS date, " +
-                        "  AVG(online)                   AS avg_online, " +
-                        "  MAX(online)                   AS peak_online " +
-                        "FROM faction_online_samples " +
-                        "WHERE faction_name = ? AND ts_ms >= ? " +
+                        "  date(hour_ms/1000, 'unixepoch') AS date, " +
+                        "  CAST(SUM(online_sum) AS REAL) / SUM(sample_count) AS avg_online, " +
+                        "  MAX(peak_online) AS peak_online " +
+                        "FROM faction_online_hourly " +
+                        "WHERE faction_name = ? AND hour_ms >= ? " +
                         "GROUP BY date " +
                         "ORDER BY date";
 
         List<Map<String, Object>> list = new ArrayList<>();
         try (PreparedStatement ps = database.prepareStatement(sql)) {
             ps.setString(1, factionName);
-            ps.setLong(2, sinceMs);
+            ps.setLong(2, sinceHourMs);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> row = new HashMap<>();
@@ -688,19 +708,20 @@ public class FactionDatabase {
 
     public List<Map<String, Object>> getOnlineChartByHour(String factionName, int daysBack) throws SQLException {
         long sinceMs = System.currentTimeMillis() - (daysBack * 86_400_000L);
+        long sinceHourMs = Math.floorDiv(sinceMs, 3_600_000L) * 3_600_000L;
         String sql =
                 "SELECT " +
-                        "  CAST(strftime('%H', ts_ms/1000, 'unixepoch') AS INTEGER) AS hour, " +
-                        "  AVG(online)                                                  AS avg_online " +
-                        "FROM faction_online_samples " +
-                        "WHERE faction_name = ? AND ts_ms >= ? " +
+                        "  CAST(strftime('%H', hour_ms/1000, 'unixepoch') AS INTEGER) AS hour, " +
+                        "  CAST(SUM(online_sum) AS REAL) / SUM(sample_count) AS avg_online " +
+                        "FROM faction_online_hourly " +
+                        "WHERE faction_name = ? AND hour_ms >= ? " +
                         "GROUP BY hour " +
                         "ORDER BY hour";
 
         List<Map<String, Object>> list = new ArrayList<>();
         try (PreparedStatement ps = database.prepareStatement(sql)) {
             ps.setString(1, factionName);
-            ps.setLong(2, sinceMs);
+            ps.setLong(2, sinceHourMs);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     Map<String, Object> row = new HashMap<>();
@@ -840,6 +861,7 @@ public class FactionDatabase {
             conn.setAutoCommit(false);
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                int pendingBatchRows = 0;
                 for (Map.Entry<String, Map<String, BlockStatCache.BlockStat>> entryByUuid : allStats.entrySet()) {
                     String uuid = entryByUuid.getKey();
                     for (Map.Entry<String, BlockStatCache.BlockStat> entry : entryByUuid.getValue().entrySet()) {
@@ -853,9 +875,16 @@ public class FactionDatabase {
                         ps.setInt(5, stat.broken);
                         ps.setString(6, factionName);
                         ps.addBatch();
+                        if (++pendingBatchRows >= JDBC_BATCH_SIZE) {
+                            ps.executeBatch();
+                            ps.clearBatch();
+                            pendingBatchRows = 0;
+                        }
                     }
                 }
-                ps.executeBatch();
+                if (pendingBatchRows > 0) {
+                    ps.executeBatch();
+                }
             }
 
             conn.commit();
@@ -948,6 +977,7 @@ public class FactionDatabase {
             conn.setAutoCommit(false);
 
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                int pendingBatchRows = 0;
                 for (Map.Entry<String, org.degree.factions.utils.KillStatCache.KillStat> entry : statsByUuid.entrySet()) {
                     String uuid = entry.getKey();
                     org.degree.factions.utils.KillStatCache.KillStat stat = entry.getValue();
@@ -958,8 +988,15 @@ public class FactionDatabase {
                     ps.setInt(3, stat.kills);
                     ps.setString(4, factionName);
                     ps.addBatch();
+                    if (++pendingBatchRows >= JDBC_BATCH_SIZE) {
+                        ps.executeBatch();
+                        ps.clearBatch();
+                        pendingBatchRows = 0;
+                    }
                 }
-                ps.executeBatch();
+                if (pendingBatchRows > 0) {
+                    ps.executeBatch();
+                }
             }
 
             conn.commit();

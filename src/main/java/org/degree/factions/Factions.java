@@ -32,6 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
@@ -44,7 +45,7 @@ public final class Factions extends JavaPlugin {
     private FactionUtils factionUtils;
     private Database database;
     private FactionDatabase factionDatabase;
-    private ExecutorService databaseExecutor;
+    private ScheduledExecutorService databaseExecutor;
 
     @Override
     public void onEnable() {
@@ -53,14 +54,21 @@ public final class Factions extends JavaPlugin {
 
         instance = this;
         database = new Database(this);
-        databaseExecutor = Executors.newSingleThreadExecutor(worker -> {
+        databaseExecutor = Executors.newSingleThreadScheduledExecutor(worker -> {
             Thread thread = new Thread(() -> {
                 database.setBusyTimeoutForCurrentThread(Database.BACKGROUND_BUSY_TIMEOUT_MS);
                 worker.run();
             }, getName() + "-Database");
             thread.setDaemon(true);
+            thread.setPriority(Thread.NORM_PRIORITY - 1);
             return thread;
         });
+        databaseExecutor.scheduleWithFixedDelay(
+                database::checkpointWalPassive,
+                30L,
+                60L,
+                TimeUnit.SECONDS
+        );
         factionDatabase = new FactionDatabase(database);
         factionUtils = new FactionUtils();
         configManager = new ConfigManager(this);
@@ -80,8 +88,8 @@ public final class Factions extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new BlockStatListener(factionDatabase), this);
         getServer().getPluginManager().registerEvents(new KillStatListener(), this);
 
-        SchedulerCompat.runGlobalTimer(this, new BlockStatSaverTask(factionDatabase), 20L * 60, 20L * 60);
-        SchedulerCompat.runGlobalTimer(this, new KillStatSaverTask(this, factionDatabase), 20L * 60, 20L * 60);
+        SchedulerCompat.runGlobalTimer(this, new BlockStatSaverTask(factionDatabase), 20L * 20, 20L * 60);
+        SchedulerCompat.runGlobalTimer(this, new KillStatSaverTask(this, factionDatabase), 20L * 40, 20L * 60);
 
         if (getServer().getPluginManager().getPlugin("PlaceholderAPI") != null) {
             new FactionPlaceholder(this).register();
@@ -112,7 +120,7 @@ public final class Factions extends JavaPlugin {
             SchedulerCompat.runGlobalTimer(this, new OnlineSampleTask(this, factionDatabase), 20L * 5, 20L * sampleSeconds);
 
             int intervalSeconds = Math.max(30, configManager.getIngestIntervalSeconds());
-            SchedulerCompat.runGlobalTimer(this, apiClient::postAllFactionsFromDatabase, 20L * 10, 20L * intervalSeconds);
+            apiClient.startPeriodicFullSnapshots(10L, intervalSeconds);
 
             getLogger().info("Ingest enabled: sampling online every " + sampleSeconds + "s, sending snapshot every " + intervalSeconds + "s");
         }
