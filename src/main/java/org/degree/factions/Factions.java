@@ -14,6 +14,7 @@ import org.degree.factions.listeners.BlockStatListener;
 import org.degree.factions.listeners.KillStatListener;
 import org.degree.factions.listeners.SessionListener;
 import org.degree.factions.models.Faction;
+import org.degree.factions.tasks.BlockStatSaverTask;
 import org.degree.factions.tasks.KillStatSaverTask;
 import org.degree.factions.tasks.OnlineSampleTask;
 import org.degree.factions.utils.BlockStatCache;
@@ -88,7 +89,7 @@ public final class Factions extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new BlockStatListener(factionDatabase), this);
         getServer().getPluginManager().registerEvents(new KillStatListener(), this);
 
-        SchedulerCompat.runGlobalTimer(this, new BlockStatSaverTask(factionDatabase), 20L * 20, 20L * 60);
+        SchedulerCompat.runGlobalTimer(this, new BlockStatSaverTask(this, factionDatabase), 20L * 20, 20L * 60);
         SchedulerCompat.runGlobalTimer(this, new KillStatSaverTask(this, factionDatabase), 20L * 40, 20L * 60);
 
         if (getServer().getPluginManager().getPlugin("PlaceholderAPI") != null) {
@@ -134,24 +135,6 @@ public final class Factions extends JavaPlugin {
         flushAndStopDatabaseExecutor();
         if (database != null) {
             database.closeConnection();
-        }
-    }
-
-    public class BlockStatSaverTask implements Runnable {
-        private final FactionDatabase db;
-
-        public BlockStatSaverTask(FactionDatabase db) {
-            this.db = db;
-        }
-
-        @Override
-        public void run() {
-            runDatabaseTask(() -> {
-                Map<String, Map<String, BlockStatCache.BlockStat>> snapshot = BlockStatCache.getAndClearStats();
-                if (!snapshot.isEmpty() && !db.saveOrUpdateBlockStatsBatch(snapshot)) {
-                    BlockStatCache.merge(snapshot);
-                }
-            });
         }
     }
 

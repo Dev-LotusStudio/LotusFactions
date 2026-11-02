@@ -7,6 +7,10 @@ import org.bukkit.entity.Player;
 import org.degree.factions.Factions;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -15,36 +19,66 @@ import java.util.regex.Pattern;
 
 public class LocalizationManager {
     private final Factions plugin;
-    private FileConfiguration localeConfig;
     private final Map<String, String> messages = new HashMap<>();
     private static final Pattern HEX_PATTERN = Pattern.compile("&#([A-Fa-f0-9]{6})");
-    private String currentLanguage;
+    private static final String DEFAULT_LANGUAGE = "en";
 
     public LocalizationManager(Factions plugin, String language) {
         this.plugin = plugin;
-        this.currentLanguage = language;
         loadLocale(language);
     }
 
     private void loadLocale(String lang) {
-        File localeFile = new File(plugin.getDataFolder(), "lang/" + lang + ".yml");
-
-        if (!localeFile.exists()) {
-            plugin.saveResource("lang/" + lang + ".yml", false);
+        // Layer the sources so that keys added in newer plugin versions are never missing,
+        // even when the server owner still has a lang file saved by an older version:
+        // bundled English -> bundled <lang> -> <plugin folder>/lang/<lang>.yml (user overrides).
+        loadBundled(DEFAULT_LANGUAGE);
+        if (!DEFAULT_LANGUAGE.equals(lang)) {
+            loadBundled(lang);
         }
 
-        localeConfig = YamlConfiguration.loadConfiguration(localeFile);
+        String resourcePath = "lang/" + lang + ".yml";
+        File localeFile = new File(plugin.getDataFolder(), resourcePath);
+        boolean bundled = hasBundled(lang);
+        if (!localeFile.exists() && bundled) {
+            plugin.saveResource(resourcePath, false);
+        }
+        if (localeFile.exists()) {
+            putStrings(YamlConfiguration.loadConfiguration(localeFile));
+        } else if (!bundled) {
+            plugin.getLogger().warning("Language '" + lang + "' not found, using " + DEFAULT_LANGUAGE);
+        }
+    }
 
-        for (String key : localeConfig.getKeys(true)) {
-            if (localeConfig.isString(key)) {
-                messages.put(key, localeConfig.getString(key));
+    private boolean hasBundled(String lang) {
+        try (InputStream in = plugin.getResource("lang/" + lang + ".yml")) {
+            return in != null;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private void loadBundled(String lang) {
+        try (InputStream in = plugin.getResource("lang/" + lang + ".yml")) {
+            if (in == null) {
+                return;
+            }
+            putStrings(YamlConfiguration.loadConfiguration(new InputStreamReader(in, StandardCharsets.UTF_8)));
+        } catch (IOException e) {
+            plugin.getLogger().warning("Failed to read bundled language '" + lang + "': " + e.getMessage());
+        }
+    }
+
+    private void putStrings(FileConfiguration config) {
+        for (String key : config.getKeys(true)) {
+            if (config.isString(key)) {
+                messages.put(key, config.getString(key));
             }
         }
     }
 
     public void reload(String lang) {
         messages.clear();
-        this.currentLanguage = lang;
         loadLocale(lang);
     }
 

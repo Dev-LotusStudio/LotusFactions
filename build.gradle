@@ -27,14 +27,7 @@ dependencies {
 
     compileOnly 'me.clip:placeholderapi:2.11.6'
 
-    implementation 'org.ow2.asm:asm:9.5'
-    implementation 'org.json:json:20210307'
-
     implementation 'org.bstats:bstats-bukkit:3.0.0'
-
-    implementation 'javax.servlet:javax.servlet-api:4.0.1'
-    implementation 'org.eclipse.jetty:jetty-server:9.4.43.v20210629'
-    implementation 'org.eclipse.jetty:jetty-servlet:9.4.43.v20210629'
 }
 
 java {
@@ -48,27 +41,17 @@ tasks.withType(JavaCompile).configureEach {
     options.release.set(17)
 }
 
-tasks.register('copyWebResources', Copy) {
-    from 'src/main/resources/web'
-    into "$buildDir/resources/main/web"
-}
-
 processResources {
     inputs.properties version: project.version
     filteringCharset 'UTF-8'
     filesMatching('plugin.yml') {
         expand version: project.version
     }
-    from('src/main/resources/web') {
-        into 'web'
-    }
-    duplicatesStrategy = DuplicatesStrategy.INCLUDE
 }
 
 shadowJar {
     configurations = [project.configurations.runtimeClasspath]
 
-    relocate 'org.eclipse.jetty', 'org.degree.faction.lib.jetty'
     relocate 'org.bstats', 'org.degree.libs.bstats'
 
     archiveFileName.set("${project.name}-${project.version}.jar")
