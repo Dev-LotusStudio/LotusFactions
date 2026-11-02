@@ -18,11 +18,11 @@ Discord: degree7
 - Stats export to an external backend ("ingest") that powers the web interface; optional Discord role sync flag per faction.
 - PlaceholderAPI placeholders (optional).
 - Languages: Russian (`ru`) and English (`en`); messages are editable in `plugins/Faction/lang/`.
-- Paper/Spigot 1.21 and Folia support. Data is stored locally in SQLite.
+- Paper 26.3 and Folia support. Data is stored locally in SQLite.
 
 ## Requirements
 
-- Java 21 and Paper/Spigot 1.21+
+- Java 25 and Paper 26.3
 - PlaceholderAPI (optional)
 
 ## Build
