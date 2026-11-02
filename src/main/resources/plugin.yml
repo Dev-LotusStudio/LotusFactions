@@ -59,6 +59,18 @@ permissions:
     description: Update faction stats in web(admin)
     default: op
 
+  faction.remove:
+    description: Allows removing members from your faction
+    default: op
+
+  faction.dissolve:
+    description: Allows dissolving your own faction
+    default: op
+
+  faction.delete:
+    description: Allows deleting any faction (admin)
+    default: op
+
   faction.rolesync:
     description: Controls Discord faction role synchronization
     default: op

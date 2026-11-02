@@ -11,6 +11,7 @@ import org.degree.factions.utils.SchedulerCompat;
 import java.sql.SQLException;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 public class FactionRemoveCommand extends AbstractCommand {
 
@@ -38,18 +39,18 @@ public class FactionRemoveCommand extends AbstractCommand {
 
             String memberName = args[0];
             if (leader.getName().equalsIgnoreCase(memberName)) {
-                leader.sendMessage("§cВы не можете удалить самого себя. Для выхода используйте /faction leave.");
+                localization.sendMessageToPlayer(leader, "messages.cannot_remove_self");
                 return;
             }
 
             String factionName = factionDatabase.getFactionNameByLeader(leaderUUID);
             if (factionName == null) {
-                leader.sendMessage("§cУ вас нет фракции.");
+                localization.sendMessageToPlayer(leader, "messages.you_have_no_faction");
                 return;
             }
 
             if (!factionDatabase.isMemberOfFaction(factionName, memberName)) {
-                leader.sendMessage("§cЭтот игрок не состоит в вашей фракции.");
+                localization.sendMessageToPlayer(leader, "messages.player_not_in_your_faction");
                 return;
             }
 
@@ -57,18 +58,19 @@ public class FactionRemoveCommand extends AbstractCommand {
             String memberUUID = member.getUniqueId().toString();
 
             if (factionDatabase.isLeader(memberUUID)) {
-                leader.sendMessage("§cВы не можете удалить другого лидера.");
+                localization.sendMessageToPlayer(leader, "messages.cannot_remove_other_leader");
                 return;
             }
 
             factionDatabase.removeMemberFromFaction(memberUUID);
             FactionCache.setFaction(memberUUID, null);
             plugin.runDatabaseTask(() -> factionDatabase.logSessionEnd(memberUUID));
-            leader.sendMessage("§aИгрок " + memberName + " был удален из фракции.");
+            localization.sendMessageToPlayer(leader, "messages.member_removed", Map.of("memberName", memberName));
             if (member.isOnline()) {
                 Player onlineMember = (Player) member;
                 SchedulerCompat.runEntity(plugin, onlineMember,
-                        () -> onlineMember.sendMessage("§cВы были исключены из фракции " + factionName + "."));
+                        () -> localization.sendMessageToPlayer(onlineMember, "messages.kicked_from_faction",
+                                Map.of("factionName", factionName)));
             }
             apiClient.postFactionFromDatabase(factionName);
         } catch (SQLException e) {

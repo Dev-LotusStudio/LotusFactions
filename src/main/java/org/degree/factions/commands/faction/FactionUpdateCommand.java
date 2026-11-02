@@ -17,7 +17,7 @@ public class FactionUpdateCommand extends AbstractCommand {
         Player player = (Player) sender;
 
         if (args.length == 0) {
-            player.sendMessage("§cУкажите имя фракции!");
+            localization.sendMessageToPlayer(player, "messages.faction_name_required");
             return;
         }
 
